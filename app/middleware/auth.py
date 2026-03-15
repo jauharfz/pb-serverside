@@ -48,7 +48,7 @@ def _verify_and_load_user():
     except Exception:
         return jsonify(_ERR_UNAUTH), 401
 
-    if res.data is None:
+    if not res or res.data is None:
         return jsonify(_ERR_UNAUTH), 401
 
     g.user_id   = user_id

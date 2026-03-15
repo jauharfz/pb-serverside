@@ -21,4 +21,4 @@ COPY --from=builder /usr/local/bin/gunicorn /usr/local/bin/gunicorn
 COPY . .
 
 EXPOSE 7860
-CMD ["sh", "-c", "gunicorn run:app --bind 0.0.0.0:${PORT:-7860} --workers 2 --timeout 60 --access-logfile -"]
+CMD ["sh", "-c", "gunicorn run:app --bind 0.0.0.0:${PORT:-7860} --workers 1 --timeout 60 --access-logfile -"]

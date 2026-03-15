@@ -25,13 +25,15 @@ _TIMEOUT = 10  # detik
 @admin_only
 def get_umkm():
     api_url = os.environ.get("UMKM_API_URL", "").strip()
-    api_key = os.environ.get("UMKM_API_KEY", "").strip()
 
     if not api_url:
+        # Belum ada URL eksternal — kembalikan data kosong, bukan error
         return jsonify({
-            "status": "error",
-            "message": "Gagal mengambil data dari API eksternal kelompok UMKM",
-        }), 502
+            "status": "success",
+            "source": "external_umkm_api",
+            "data": [],
+            "_info": "UMKM_API_URL belum dikonfigurasi"
+        }), 200
 
     # ── Forward query params yang relevan ─────────────────────────────────
     params: dict = {}

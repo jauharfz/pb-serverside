@@ -26,16 +26,17 @@ def get_stats():
     event_id = request.args.get("event_id", "")
 
     try:
-        # ── Resolve event_id jika tidak dikirim ───────────────────────────
+        # Resolve event_id jika tidak dikirim
         if not event_id:
             ev_res = (
                 supabase.table("event")
                 .select("id, nama_event")
-                .eq("status", "aktif")
+                .filter("status", "eq", "aktif")   # ganti .eq() → .filter()
+                .order("created_at", desc=True)
                 .limit(1)
                 .execute()
             )
-            if not ev_res.data:
+            if not ev_res or not ev_res.data:      # tambah guard not ev_res
                 return jsonify({
                     "status": "success",
                     "data": {
@@ -61,7 +62,7 @@ def get_stats():
             )
             nama_event = ev_res.data["nama_event"] if ev_res.data else None
 
-        # ── Query view v_dashboard_stats ──────────────────────────────────
+        # Query view v_dashboard_stats
         stats_res = (
             supabase.table("v_dashboard_stats")
             .select("*")
@@ -71,7 +72,7 @@ def get_stats():
             .execute()
         )
 
-        if stats_res.data:
+        if stats_res and stats_res.data:       # tambah guard stats_res
             return jsonify({"status": "success", "data": stats_res.data}), 200
 
         # Event ada tapi belum ada kunjungan hari ini → kembalikan nol

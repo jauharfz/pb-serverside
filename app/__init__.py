@@ -67,7 +67,9 @@ def create_app() -> Flask:
         _DATE_RE_INLINE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
         def _today_inline():
-            return date.today().isoformat()
+            # HuggingFace berjalan UTC — gunakan UTC+7 (WIB) agar cocok dengan date picker
+            from datetime import datetime, timedelta
+            return (datetime.utcnow() + timedelta(hours=7)).strftime('%Y-%m-%d')
 
         def _deactivate_others_inline(exclude_id=None):
             q = supabase.table("event").update({"status": "selesai"}).eq("status", "aktif")

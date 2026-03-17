@@ -30,7 +30,7 @@ Aturan bisnis (semua ditegakkan di backend):
 """
 
 import re
-from datetime import date
+from datetime import date, datetime
 
 from flask import Blueprint, jsonify, request
 
@@ -43,7 +43,16 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _today():
-    return date.today().isoformat()
+    """
+    Kembalikan tanggal hari ini dalam timezone Asia/Jakarta (WIB, UTC+7).
+    Menggunakan datetime.utcnow() + offset manual agar tidak bergantung
+    pada library pytz/zoneinfo yang mungkin tidak tersedia di semua environment.
+    HuggingFace Spaces berjalan di UTC, sehingga date.today() mengembalikan
+    tanggal UTC yang bisa berbeda dari tanggal lokal WIB (00:00–06:59 WIB).
+    """
+    from datetime import timedelta
+    wib = datetime.utcnow() + timedelta(hours=7)
+    return wib.strftime('%Y-%m-%d')
 
 
 def _deactivate_other_events(exclude_id=None):

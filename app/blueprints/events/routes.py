@@ -1,23 +1,32 @@
 """
 Blueprint: Event Management
 ────────────────────────────
-GET   /api/events       → REQ-EVENT-001  (Admin only)
-POST  /api/events       → REQ-EVENT-001  (Admin only)
-PATCH /api/events/<id>  → REQ-EVENT-001  (Admin only)
-DELETE /api/events/<id> → REQ-EVENT-001  (Admin only)
+GET    /api/events       → REQ-EVENT-001  (Admin only)
+POST   /api/events       → REQ-EVENT-001  (Admin only)
+PATCH  /api/events/<id>  → REQ-EVENT-001  (Admin only)
+DELETE /api/events/<id>  → REQ-EVENT-001  (Admin only)
 
-Aturan bisnis:
-  - Event dibuat hari ini    → status otomatis 'aktif'
-  - Event dibuat masa depan  → status otomatis 'selesai' (belum mulai)
-  - Hanya satu event boleh 'aktif' bersamaan — mengaktifkan satu event
-    akan otomatis menonaktifkan event lain yang sedang aktif
-  - PATCH mendeteksi operasi dari isi body:
-      body berisi 'status' → toggle aktif/selesai
-      body berisi field lain (nama_event, lokasi, tanggal) → edit detail
-  - DELETE hanya berhasil jika event belum punya kunjungan (FK RESTRICT)
+Aturan bisnis (semua ditegakkan di backend):
 
-Tidak ada perubahan schema database — tabel EVENT dan enum
-event_status_enum ('aktif', 'selesai') sudah ada di Supabase schema.
+  [POST]
+  - Tanggal hari ini   → status otomatis 'aktif', nonaktifkan event aktif lain
+  - Tanggal masa depan → status otomatis 'selesai' (belum mulai)
+
+  [PATCH — deteksi operasi dari isi body]
+  A. body berisi 'status' → toggle aktif/selesai
+     - Aktifkan: hanya boleh jika tanggal event <= hari ini
+     - Aktifkan: otomatis nonaktifkan event aktif lain
+  B. body berisi field detail (nama_event, lokasi, tanggal) → edit
+     - Tanggal TIDAK boleh diubah jika event sedang 'aktif'
+     - Jika edit tanggal → hari ini: status otomatis jadi 'aktif' + nonaktifkan lain
+     - Jika edit tanggal → masa depan: status otomatis jadi 'selesai'
+     - Jika edit tanggal → masa lalu: status tetap 'selesai'
+
+  [DELETE]
+  - Event aktif tidak bisa dihapus
+  - Event dengan kunjungan tidak bisa dihapus (FK RESTRICT dari Supabase)
+
+  Invariant: hanya satu event 'aktif' di satu waktu.
 """
 
 import re
@@ -33,6 +42,22 @@ events_bp = Blueprint("events", __name__)
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
+def _today():
+    return date.today().isoformat()
+
+
+def _deactivate_other_events(exclude_id=None):
+    """Nonaktifkan semua event aktif kecuali exclude_id."""
+    query = (
+        supabase.table("event")
+        .update({"status": "selesai"})
+        .eq("status", "aktif")
+    )
+    if exclude_id:
+        query = query.neq("id", exclude_id)
+    query.execute()
+
+
 # ── GET /events ───────────────────────────────────────────────────────────
 
 @events_bp.route("/events", methods=["GET"])
@@ -42,7 +67,7 @@ def get_events():
         result = (
             supabase.table("event")
             .select("*")
-            .order("status", desc=False)   # 'aktif' < 'selesai' alfabet → aktif dulu
+            .order("status", desc=False)
             .order("tanggal", desc=True)
             .execute()
         )
@@ -52,10 +77,6 @@ def get_events():
 
 
 # ── POST /events ──────────────────────────────────────────────────────────
-# Status ditentukan otomatis berdasarkan tanggal:
-#   tanggal == hari ini → 'aktif'
-#   tanggal > hari ini  → 'selesai' (belum mulai, tidak menerima kunjungan)
-# Jika event dibuat aktif (tanggal hari ini), event aktif lain dinonaktifkan.
 
 @events_bp.route("/events", methods=["POST"])
 @admin_only
@@ -78,12 +99,10 @@ def create_event():
             "message": "Format tanggal tidak valid. Gunakan YYYY-MM-DD",
         }), 422
 
-    # Tentukan status berdasarkan tanggal
-    today        = date.today().isoformat()
-    auto_status  = "aktif" if tanggal == today else "selesai"
+    today       = _today()
+    auto_status = "aktif" if tanggal <= today else "selesai"
 
     try:
-        # Jika event baru akan aktif, nonaktifkan event lain yang sedang aktif
         if auto_status == "aktif":
             _deactivate_other_events(exclude_id=None)
 
@@ -103,26 +122,22 @@ def create_event():
             "message": "Event berhasil dibuat",
             "data":    created,
         }), 201
-
     except Exception:
         return jsonify({"status": "error", "message": "Terjadi kesalahan pada server"}), 500
 
 
 # ── PATCH /events/<id> ────────────────────────────────────────────────────
-# Mendeteksi operasi dari isi body:
-#   body mengandung 'status'     → toggle aktif/selesai
-#   body mengandung field detail → edit nama_event, lokasi, tanggal
 
 @events_bp.route("/events/<string:event_id>", methods=["PATCH"])
 @admin_only
 def update_event(event_id):
     body = request.get_json(silent=True) or {}
 
-    # ── Cek keberadaan event ──────────────────────────────────────────────
+    # Ambil data event saat ini
     try:
         check = (
             supabase.table("event")
-            .select("id, status")
+            .select("id, status, tanggal")
             .eq("id", event_id)
             .maybe_single()
             .execute()
@@ -132,15 +147,15 @@ def update_event(event_id):
     except Exception:
         return jsonify({"status": "error", "message": "Terjadi kesalahan pada server"}), 500
 
-    # ── Deteksi operasi ───────────────────────────────────────────────────
+    current = check.data
+
     if "status" in body:
-        return _handle_toggle_status(event_id, body, check.data)
+        return _handle_toggle_status(event_id, body, current)
     else:
-        return _handle_edit_fields(event_id, body)
+        return _handle_edit_fields(event_id, body, current)
 
 
-def _handle_toggle_status(event_id, body, current_event):
-    """Toggle status: aktif ↔ selesai."""
+def _handle_toggle_status(event_id, body, current):
     new_status = (body.get("status") or "").strip()
 
     if new_status not in ("aktif", "selesai"):
@@ -149,8 +164,17 @@ def _handle_toggle_status(event_id, body, current_event):
             "message": "Nilai status tidak valid. Gunakan 'aktif' atau 'selesai'",
         }), 400
 
+    # Guard: event masa depan tidak boleh diaktifkan
+    if new_status == "aktif" and current["tanggal"] > _today():
+        return jsonify({
+            "status": "error",
+            "message": (
+                f"Event ini dijadwalkan pada {current['tanggal']} dan belum bisa diaktifkan. "
+                "Aktifkan hanya pada hari pelaksanaan."
+            ),
+        }), 422
+
     try:
-        # Jika mengaktifkan, nonaktifkan event lain yang sedang aktif
         if new_status == "aktif":
             _deactivate_other_events(exclude_id=event_id)
 
@@ -166,13 +190,11 @@ def _handle_toggle_status(event_id, body, current_event):
             "message": f"Status event berhasil diubah menjadi {new_status}",
             "data":    updated,
         }), 200
-
     except Exception:
         return jsonify({"status": "error", "message": "Terjadi kesalahan pada server"}), 500
 
 
-def _handle_edit_fields(event_id, body):
-    """Edit detail: nama_event, lokasi, tanggal."""
+def _handle_edit_fields(event_id, body, current):
     ALLOWED = {"nama_event", "lokasi", "tanggal"}
     payload = {k: v for k, v in body.items() if k in ALLOWED and v is not None}
 
@@ -182,12 +204,29 @@ def _handle_edit_fields(event_id, body):
             "message": "Tidak ada field yang valid untuk diperbarui",
         }), 422
 
-    # Validasi format tanggal jika disertakan
+    # Guard: tanggal tidak boleh diubah jika event sedang aktif
+    if "tanggal" in payload and current["status"] == "aktif":
+        return jsonify({
+            "status": "error",
+            "message": "Tanggal tidak dapat diubah saat event sedang aktif. Nonaktifkan event terlebih dahulu.",
+        }), 422
+
     if "tanggal" in payload and not _DATE_RE.match(payload["tanggal"]):
         return jsonify({
             "status": "error",
             "message": "Format tanggal tidak valid. Gunakan YYYY-MM-DD",
         }), 422
+
+    # Jika tanggal diubah, tentukan status baru otomatis
+    today = _today()
+    if "tanggal" in payload:
+        new_tanggal    = payload["tanggal"]
+        new_auto_status = "aktif" if new_tanggal <= today else "selesai"
+        payload["status"] = new_auto_status
+
+        # Jika event baru akan aktif, nonaktifkan event lain
+        if new_auto_status == "aktif":
+            _deactivate_other_events(exclude_id=event_id)
 
     try:
         result = (
@@ -202,21 +241,16 @@ def _handle_edit_fields(event_id, body):
             "message": "Data event berhasil diperbarui",
             "data":    updated,
         }), 200
-
     except Exception:
         return jsonify({"status": "error", "message": "Terjadi kesalahan pada server"}), 500
 
 
 # ── DELETE /events/<id> ───────────────────────────────────────────────────
-# Postgres FK RESTRICT pada kunjungan.event_id akan menolak jika ada kunjungan.
-# Frontend mendeteksi error ini dari status 409 atau pesan error yang mengandung
-# kata kunci 'kunjungan' / 'restrict'.
 
 @events_bp.route("/events/<string:event_id>", methods=["DELETE"])
 @admin_only
 def delete_event(event_id):
     try:
-        # Pastikan event ada
         check = (
             supabase.table("event")
             .select("id, status")
@@ -227,7 +261,6 @@ def delete_event(event_id):
         if not check.data:
             return jsonify({"status": "error", "message": "Event tidak ditemukan"}), 404
 
-        # Jangan hapus event yang masih aktif
         if check.data.get("status") == "aktif":
             return jsonify({
                 "status": "error",
@@ -241,8 +274,6 @@ def delete_event(event_id):
             .execute()
         )
 
-        # Supabase delete yang kena FK RESTRICT biasanya raise exception,
-        # tapi jika result kosong karena alasan lain, kembalikan 404
         if result.data is not None and len(result.data) == 0:
             return jsonify({"status": "error", "message": "Event tidak ditemukan"}), 404
 
@@ -250,27 +281,9 @@ def delete_event(event_id):
 
     except Exception as exc:
         msg = str(exc).lower()
-        if "violates foreign key" in msg or "restrict" in msg or "kunjungan" in msg:
+        if "foreign key" in msg or "restrict" in msg or "kunjungan" in msg:
             return jsonify({
                 "status": "error",
                 "message": "Event tidak dapat dihapus karena sudah memiliki data kunjungan.",
             }), 409
         return jsonify({"status": "error", "message": "Terjadi kesalahan pada server"}), 500
-
-
-# ── Helper ────────────────────────────────────────────────────────────────
-
-def _deactivate_other_events(exclude_id):
-    """
-    Nonaktifkan semua event aktif kecuali exclude_id.
-    Dipanggil sebelum mengaktifkan event baru untuk menjaga
-    invariant: hanya satu event aktif di satu waktu.
-    """
-    query = (
-        supabase.table("event")
-        .update({"status": "selesai"})
-        .eq("status", "aktif")
-    )
-    if exclude_id:
-        query = query.neq("id", exclude_id)
-    query.execute()

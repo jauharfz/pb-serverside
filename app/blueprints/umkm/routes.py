@@ -7,6 +7,9 @@ Flask API bertindak sebagai proxy ke API eksternal kelompok UMKM.
 URL dan API key dikonfigurasi via environment variable:
   UMKM_API_URL  → endpoint API eksternal
   UMKM_API_KEY  → bearer token API eksternal (jika ada)
+
+BUGFIX: variabel api_key sebelumnya digunakan tanpa didefinisikan terlebih
+dahulu. Diperbaiki dengan membaca UMKM_API_KEY dari environment.
 """
 
 import os
@@ -25,6 +28,8 @@ _TIMEOUT = 10  # detik
 @admin_only
 def get_umkm():
     api_url = os.environ.get("UMKM_API_URL", "").strip()
+    # [BUGFIX] Definisikan api_key sebelum digunakan
+    api_key = os.environ.get("UMKM_API_KEY", "").strip()
 
     if not api_url:
         # Belum ada URL eksternal — kembalikan data kosong, bukan error

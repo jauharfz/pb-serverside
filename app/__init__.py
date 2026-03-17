@@ -10,14 +10,15 @@ def create_app() -> Flask:
     CORS(app, resources={r"/api/*": {"origins": "*"}})
 
     # ── Blueprints ────────────────────────────────────────────────────────
-    from app.blueprints.auth.routes     import auth_bp
-    from app.blueprints.nfc.routes      import nfc_bp
-    from app.blueprints.members.routes  import members_bp
-    from app.blueprints.visitors.routes import visitors_bp
+    from app.blueprints.auth.routes      import auth_bp
+    from app.blueprints.nfc.routes       import nfc_bp
+    from app.blueprints.members.routes   import members_bp
+    from app.blueprints.visitors.routes  import visitors_bp
     from app.blueprints.dashboard.routes import dashboard_bp
-    from app.blueprints.reports.routes  import reports_bp
+    from app.blueprints.reports.routes   import reports_bp
     from app.blueprints.discounts.routes import discounts_bp
-    from app.blueprints.umkm.routes     import umkm_bp
+    from app.blueprints.umkm.routes      import umkm_bp
+    from app.blueprints.events.routes    import events_bp   # REQ-EVENT-001
 
     app.register_blueprint(auth_bp,      url_prefix="/api/auth")
     app.register_blueprint(nfc_bp,       url_prefix="/api")
@@ -27,5 +28,6 @@ def create_app() -> Flask:
     app.register_blueprint(reports_bp,   url_prefix="/api")
     app.register_blueprint(discounts_bp, url_prefix="/api")
     app.register_blueprint(umkm_bp,      url_prefix="/api")
+    app.register_blueprint(events_bp,    url_prefix="/api")  # REQ-EVENT-001
 
     return app

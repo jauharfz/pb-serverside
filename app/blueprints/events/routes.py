@@ -100,7 +100,9 @@ def create_event():
         }), 422
 
     today       = _today()
-    auto_status = "aktif" if tanggal <= today else "selesai"
+    # Hanya tanggal hari ini persis yang auto-aktif.
+    # Tanggal lampau → selesai (event baru dengan tanggal lalu tidak masuk akal untuk diaktifkan).
+    auto_status = "aktif" if tanggal == today else "selesai"
 
     try:
         if auto_status == "aktif":
@@ -221,7 +223,8 @@ def _handle_edit_fields(event_id, body, current):
     today = _today()
     if "tanggal" in payload:
         new_tanggal    = payload["tanggal"]
-        new_auto_status = "aktif" if new_tanggal <= today else "selesai"
+        # Sama: hanya tanggal hari ini yang auto-aktif. Tanggal lampau → selesai.
+        new_auto_status = "aktif" if new_tanggal == today else "selesai"
         payload["status"] = new_auto_status
 
         # Jika event baru akan aktif, nonaktifkan event lain

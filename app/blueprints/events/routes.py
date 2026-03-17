@@ -1,12 +1,10 @@
 """
 Blueprint: Event Management
 ────────────────────────────
-GET   /api/events       → REQ-EVENT-001  (Admin only)
-POST  /api/events       → REQ-EVENT-001  (Admin only)
-PATCH /api/events/<id>  → REQ-EVENT-001  (Admin only)
-
-Tidak ada perubahan schema database — tabel EVENT dan enum
-event_status_enum ('aktif', 'selesai') sudah ada di Supabase schema.
+GET    /api/events       → REQ-EVENT-001  (Admin only)
+POST   /api/events       → REQ-EVENT-001  (Admin only)
+PATCH  /api/events/<id>  → REQ-EVENT-001  (Admin only)
+DELETE /api/events/<id>  → REQ-EVENT-001  (Admin only, hanya jika 0 kunjungan)
 """
 
 import re
@@ -22,9 +20,6 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 # ── GET /events ───────────────────────────────────────────────────────────
-# Mengembalikan semua event.
-# Urutan: aktif dulu ('aktif' < 'selesai' secara alfabet → order asc),
-#         dalam tiap grup: tanggal terbaru dulu (order desc).
 
 @events_bp.route("/events", methods=["GET"])
 @admin_only
@@ -33,25 +28,16 @@ def get_events():
         result = (
             supabase.table("event")
             .select("*")
-            .order("status", desc=False)
+            .order("status", desc=False)   # 'aktif' < 'selesai' → aktif dulu
             .order("tanggal", desc=True)
             .execute()
         )
-        return jsonify({
-            "status": "success",
-            "data": result.data or [],
-        }), 200
-
+        return jsonify({"status": "success", "data": result.data or []}), 200
     except Exception:
-        return jsonify({
-            "status": "error",
-            "message": "Terjadi kesalahan pada server",
-        }), 500
+        return jsonify({"status": "error", "message": "Terjadi kesalahan pada server"}), 500
 
 
 # ── POST /events ──────────────────────────────────────────────────────────
-# Membuat event baru dengan status otomatis 'aktif'.
-# Body: { nama_event: str, tanggal: "YYYY-MM-DD", lokasi: str }
 
 @events_bp.route("/events", methods=["POST"])
 @admin_only
@@ -77,47 +63,59 @@ def create_event():
     try:
         result = (
             supabase.table("event")
-            .insert({
-                "nama_event": nama_event,
-                "tanggal":    tanggal,
-                "lokasi":     lokasi,
-                "status":     "aktif",
-            })
+            .insert({"nama_event": nama_event, "tanggal": tanggal,
+                     "lokasi": lokasi, "status": "aktif"})
             .execute()
         )
-        created = result.data[0] if result.data else {}
         return jsonify({
-            "status":  "success",
-            "message": "Event berhasil dibuat",
-            "data":    created,
+            "status": "success", "message": "Event berhasil dibuat",
+            "data": result.data[0] if result.data else {},
         }), 201
-
     except Exception:
-        return jsonify({
-            "status": "error",
-            "message": "Terjadi kesalahan pada server",
-        }), 500
+        return jsonify({"status": "error", "message": "Terjadi kesalahan pada server"}), 500
 
 
 # ── PATCH /events/<id> ────────────────────────────────────────────────────
-# Mengubah status event: 'aktif' ↔ 'selesai'.
-# Hanya field 'status' yang diterima.
-# Body: { status: "aktif" | "selesai" }
+# Mendukung dua use-case:
+#   1. Toggle status:    body = { "status": "aktif" | "selesai" }
+#   2. Edit nama/lokasi: body = { "nama_event": "...", "lokasi": "..." }
+# Tanggal tidak dapat diubah melalui endpoint ini.
 
 @events_bp.route("/events/<string:event_id>", methods=["PATCH"])
 @admin_only
-def update_event_status(event_id):
-    body       = request.get_json(silent=True) or {}
-    new_status = (body.get("status") or "").strip()
+def update_event(event_id):
+    body = request.get_json(silent=True) or {}
 
-    if new_status not in ("aktif", "selesai"):
+    update_payload = {}
+
+    if "status" in body:
+        new_status = (body["status"] or "").strip()
+        if new_status not in ("aktif", "selesai"):
+            return jsonify({
+                "status": "error",
+                "message": "Nilai status tidak valid. Gunakan 'aktif' atau 'selesai'",
+            }), 400
+        update_payload["status"] = new_status
+
+    if "nama_event" in body:
+        nama = (body["nama_event"] or "").strip()
+        if not nama:
+            return jsonify({"status": "error", "message": "nama_event tidak boleh kosong"}), 422
+        update_payload["nama_event"] = nama
+
+    if "lokasi" in body:
+        lokasi = (body["lokasi"] or "").strip()
+        if not lokasi:
+            return jsonify({"status": "error", "message": "lokasi tidak boleh kosong"}), 422
+        update_payload["lokasi"] = lokasi
+
+    if not update_payload:
         return jsonify({
             "status": "error",
-            "message": "Nilai status tidak valid. Gunakan 'aktif' atau 'selesai'",
-        }), 400
+            "message": "Tidak ada field yang valid untuk diupdate",
+        }), 422
 
     try:
-        # Cek keberadaan event
         check = (
             supabase.table("event")
             .select("id")
@@ -126,27 +124,73 @@ def update_event_status(event_id):
             .execute()
         )
         if not check.data:
-            return jsonify({
-                "status": "error",
-                "message": "Event tidak ditemukan",
-            }), 404
+            return jsonify({"status": "error", "message": "Event tidak ditemukan"}), 404
 
-        # Update status
         result = (
             supabase.table("event")
-            .update({"status": new_status})
+            .update(update_payload)
             .eq("id", event_id)
             .execute()
         )
         updated = result.data[0] if result.data else {}
-        return jsonify({
-            "status":  "success",
-            "message": f"Status event berhasil diubah menjadi {new_status}",
-            "data":    updated,
-        }), 200
+
+        if "status" in update_payload:
+            msg = f"Status event berhasil diubah menjadi {update_payload['status']}"
+        else:
+            msg = "Data event berhasil diperbarui"
+
+        return jsonify({"status": "success", "message": msg, "data": updated}), 200
 
     except Exception:
-        return jsonify({
-            "status": "error",
-            "message": "Terjadi kesalahan pada server",
-        }), 500
+        return jsonify({"status": "error", "message": "Terjadi kesalahan pada server"}), 500
+
+
+# ── DELETE /events/<id> ───────────────────────────────────────────────────
+# Guard berlapis:
+#   1. Event tidak boleh masih aktif
+#   2. Event tidak boleh sudah punya kunjungan (ON DELETE RESTRICT di schema)
+# Jika keduanya lolos → hapus aman.
+
+@events_bp.route("/events/<string:event_id>", methods=["DELETE"])
+@admin_only
+def delete_event(event_id):
+    try:
+        # Cek event ada
+        check = (
+            supabase.table("event")
+            .select("id, nama_event, status")
+            .eq("id", event_id)
+            .maybe_single()
+            .execute()
+        )
+        if not check.data:
+            return jsonify({"status": "error", "message": "Event tidak ditemukan"}), 404
+
+        # Tolak hapus event aktif
+        if check.data.get("status") == "aktif":
+            return jsonify({
+                "status": "error",
+                "message": "Event yang masih aktif tidak dapat dihapus. Nonaktifkan terlebih dahulu.",
+            }), 409
+
+        # Cek keberadaan kunjungan
+        kunjungan_check = (
+            supabase.table("kunjungan")
+            .select("id")
+            .eq("event_id", event_id)
+            .limit(1)
+            .execute()
+        )
+        if kunjungan_check.data:
+            return jsonify({
+                "status": "error",
+                "message": "Event tidak dapat dihapus karena sudah memiliki data kunjungan. "
+                           "Tandai sebagai 'selesai' untuk mengarsipkan.",
+            }), 409
+
+        # Aman dihapus
+        supabase.table("event").delete().eq("id", event_id).execute()
+        return jsonify({"status": "success", "message": "Event berhasil dihapus"}), 200
+
+    except Exception:
+        return jsonify({"status": "error", "message": "Terjadi kesalahan pada server"}), 500

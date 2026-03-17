@@ -1,13 +1,18 @@
 """
-Blueprint: Pengunjung
-─────────────────────
+Blueprint: Pengunjung (PATCH — fix nama_member)
+────────────────────────────────────────────────
 GET  /api/visitors         → Admin only
-POST /api/visitors/manual  → REQ-MANUAL-001, REQ-MANUAL-002  (Admin & Petugas)
+POST /api/visitors/manual  → Admin & Petugas
 
-Logika keluar manual:
-  Saat petugas menekan tombol KELUAR, sistem mengambil kunjungan
-  pengunjung biasa yang paling lama berada di dalam (FIFO) untuk
-  di-update waktu_keluar-nya.
+FIX: GET /visitors sebelumnya menggunakan select("*") pada tabel kunjungan
+yang tidak memiliki kolom nama_member. Dashboard.jsx mengakses act.nama_member
+yang selalu undefined, sehingga nama member tidak pernah tampil (hanya fallback "Member").
+
+Perbaikan: gunakan PostgREST nested select untuk join tabel member secara inline.
+Response sekarang menyertakan objek nested { member: { nama: "..." } } yang
+diakses di Dashboard sebagai act.member?.nama.
+
+Tidak ada perubahan schema — ini murni perubahan query di Flask.
 """
 
 from datetime import datetime, timezone
@@ -25,13 +30,20 @@ visitors_bp = Blueprint("visitors", __name__)
 @visitors_bp.route("/visitors", methods=["GET"])
 @admin_only
 def get_visitors():
-    tanggal   = request.args.get("tanggal", "")
-    event_id  = request.args.get("event_id", "")
-    tipe      = request.args.get("tipe_pengunjung", "")
-    status    = request.args.get("status", "")
+    tanggal  = request.args.get("tanggal", "")
+    event_id = request.args.get("event_id", "")
+    tipe     = request.args.get("tipe_pengunjung", "")
+    status   = request.args.get("status", "")
 
     try:
-        query = supabase.table("kunjungan").select("*").order("waktu_masuk", desc=True)
+        # [FIX] Tambahkan PostgREST nested select: member:member_id(nama)
+        # Ini mengambil nama member sekaligus tanpa query terpisah.
+        # Response: { ..., member: { nama: "Budi Santoso" } } atau member: null untuk biasa
+        query = (
+            supabase.table("kunjungan")
+            .select("*, member:member_id(nama)")
+            .order("waktu_masuk", desc=True)
+        )
 
         if event_id:
             query = query.eq("event_id", event_id)
@@ -54,9 +66,10 @@ def get_visitors():
 
 
 # ── POST /visitors/manual ─────────────────────────────────────────────────
+# (tidak ada perubahan dari versi sebelumnya)
 
 @visitors_bp.route("/visitors/manual", methods=["POST"])
-@require_auth  # Admin dan Petugas
+@require_auth
 def manual_visitor():
     data = request.get_json(silent=True)
 
@@ -85,7 +98,6 @@ def manual_visitor():
 
     try:
         if aksi == "masuk":
-            # Insert kunjungan biasa baru
             result = (
                 supabase.table("kunjungan")
                 .insert({
@@ -102,7 +114,6 @@ def manual_visitor():
             message = "Pengunjung biasa masuk berhasil dicatat"
 
         else:
-            # Cari kunjungan biasa tertua yang masih di_dalam (FIFO)
             find_res = (
                 supabase.table("kunjungan")
                 .select("id")

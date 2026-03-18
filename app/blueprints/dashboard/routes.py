@@ -1,15 +1,16 @@
 """
-Blueprint: Dashboard Stats
-──────────────────────────
-GET /api/dashboard/stats → REQ-DASH-001, REQ-DASH-002, REQ-DASH-003, REQ-DASH-004
-                           (Admin only)
+Blueprint: Dashboard Stats (FIXED)
+────────────────────────────────────
+GET /api/dashboard/stats → REQ-DASH-001 s/d REQ-DASH-004 (Admin only)
 
-Data bersumber dari view v_dashboard_stats di Supabase.
-Jika belum ada kunjungan untuk hari/event tersebut,
-endpoint tetap mengembalikan objek dengan nilai counter = 0.
+FIX 1: date.today() → tanggal WIB hari ini
+  HuggingFace Spaces berjalan UTC. date.today() mengembalikan tanggal UTC
+  yang berbeda dari tanggal WIB antara 00:00–06:59 WIB. View v_dashboard_stats
+  menggunakan DATE(waktu_masuk AT TIME ZONE 'Asia/Jakarta') → tanggal WIB.
+  Mismatch ini menyebabkan stats selalu 0 di pagi hari meskipun ada data.
 """
 
-from datetime import date
+from datetime import datetime, timedelta
 
 from flask import Blueprint, jsonify, request
 
@@ -19,24 +20,29 @@ from app.middleware.auth import admin_only
 dashboard_bp = Blueprint("dashboard", __name__)
 
 
+def _today_wib() -> str:
+    """Tanggal hari ini dalam timezone WIB (UTC+7), format YYYY-MM-DD."""
+    return (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d")
+
+
 @dashboard_bp.route("/dashboard/stats", methods=["GET"])
 @admin_only
 def get_stats():
-    tanggal  = request.args.get("tanggal", str(date.today()))
+    # [FIX] Gunakan WIB bukan UTC sebagai default tanggal
+    tanggal  = request.args.get("tanggal", _today_wib())
     event_id = request.args.get("event_id", "")
 
     try:
-        # Resolve event_id jika tidak dikirim
         if not event_id:
             ev_res = (
                 supabase.table("event")
                 .select("id, nama_event")
-                .filter("status", "eq", "aktif")   # ganti .eq() → .filter()
+                .filter("status", "eq", "aktif")
                 .order("created_at", desc=True)
                 .limit(1)
                 .execute()
             )
-            if not ev_res or not ev_res.data:      # tambah guard not ev_res
+            if not ev_res or not ev_res.data:
                 return jsonify({
                     "status": "success",
                     "data": {
@@ -52,7 +58,6 @@ def get_stats():
             event_id   = ev_res.data[0]["id"]
             nama_event = ev_res.data[0]["nama_event"]
         else:
-            # Ambil nama event jika event_id eksplisit dikirim
             ev_res = (
                 supabase.table("event")
                 .select("nama_event")
@@ -62,20 +67,18 @@ def get_stats():
             )
             nama_event = ev_res.data["nama_event"] if ev_res.data else None
 
-        # Query view v_dashboard_stats
         stats_res = (
             supabase.table("v_dashboard_stats")
             .select("*")
             .eq("event_id", event_id)
-            .eq("tanggal", tanggal)
+            .eq("tanggal",  tanggal)
             .maybe_single()
             .execute()
         )
 
-        if stats_res and stats_res.data:       # tambah guard stats_res
+        if stats_res and stats_res.data:
             return jsonify({"status": "success", "data": stats_res.data}), 200
 
-        # Event ada tapi belum ada kunjungan hari ini → kembalikan nol
         return jsonify({
             "status": "success",
             "data": {

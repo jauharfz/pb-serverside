@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from flask import Blueprint, jsonify, request
 
 from app.extensions import supabase
-from app.middleware.auth import admin_only
+from app.middleware.auth import require_auth
 
 dashboard_bp = Blueprint("dashboard", __name__)
 
@@ -26,7 +26,7 @@ def _today_wib() -> str:
 
 
 @dashboard_bp.route("/dashboard/stats", methods=["GET"])
-@admin_only
+@require_auth
 def get_stats():
     # [FIX] Gunakan WIB bukan UTC sebagai default tanggal
     tanggal  = request.args.get("tanggal", _today_wib())

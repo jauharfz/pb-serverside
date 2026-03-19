@@ -1,11 +1,38 @@
+# Jangan ikutkan file sensitif dan tidak perlu ke Docker image
 .env
 .env.*
 !.env.example
-__pycache__
+
+# Python artifacts
+__pycache__/
 *.pyc
 *.pyo
 *.pyd
-.git
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Version control
+.git/
 .gitignore
-.DS_Store
-*.md
+
+# Frontend (bukan bagian dari backend image)
+node_modules/
+dist/
+*.jsx
+*.tsx
+*.js
+package.json
+package-lock.json
+vite.config.*
+tailwind.config.*
+postcss.config.*
+index.html
+
+# IDE
+.vscode/
+.idea/
+*.swp

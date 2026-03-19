@@ -13,12 +13,15 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Copy installed packages dari builder
+# Copy installed packages dan semua executables dari builder
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-COPY --from=builder /usr/local/bin/gunicorn /usr/local/bin/gunicorn
+COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Copy source code
 COPY . .
 
-EXPOSE 7860
-CMD ["sh", "-c", "gunicorn run:app --bind 0.0.0.0:${PORT:-7860} --workers 1 --timeout 60 --access-logfile -"]
+EXPOSE ${PORT:-7860}
+# PORT      — port listen (default 7860, Railway/Render/Fly set otomatis)
+# WORKERS   — jumlah Gunicorn worker (default 1 untuk free tier, naikkan di paid)
+# FLASK_DEBUG — "true" untuk verbose logging (jangan di production)
+CMD ["sh", "-c", "gunicorn run:app --bind 0.0.0.0:${PORT:-7860} --workers ${WORKERS:-1} --timeout 60 --access-logfile -"]

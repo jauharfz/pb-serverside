@@ -28,7 +28,7 @@ visitors_bp = Blueprint("visitors", __name__)
 # ── GET /visitors ─────────────────────────────────────────────────────────
 
 @visitors_bp.route("/visitors", methods=["GET"])
-@admin_only
+@require_auth
 def get_visitors():
     tanggal  = request.args.get("tanggal", "")
     event_id = request.args.get("event_id", "")

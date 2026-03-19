@@ -19,7 +19,7 @@ Cache invalidation:
   - _CACHED_ADMIN_ID jarang berubah, di-reset jika None saat dibutuhkan
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from flask import Blueprint, jsonify, request
 
@@ -29,15 +29,21 @@ nfc_bp = Blueprint("nfc", __name__)
 
 # ── Module-level cache (per Gunicorn worker, reset saat restart) ──────────────
 # Mengurangi jumlah DB call dari 4 → 2 per tap pada warm request.
+# TTL 60 detik: memastikan perubahan event aktif dari dashboard
+# terefleksi dalam 1 menit tanpa menunggu error/restart.
 
-_CACHED_EVENT    = None   # {"id": "...", "nama_event": "..."}
-_CACHED_ADMIN_ID = None   # UUID string
+_CACHE_TTL = timedelta(seconds=60)
+
+_CACHED_EVENT      = None   # {"id": "...", "nama_event": "..."}
+_CACHED_EVENT_AT   = None   # datetime UTC saat cache diisi
+_CACHED_ADMIN_ID   = None   # UUID string
 
 
 def _get_active_event():
-    """Ambil event aktif. Gunakan cache jika tersedia."""
-    global _CACHED_EVENT
-    if _CACHED_EVENT:
+    """Ambil event aktif. Gunakan cache jika masih dalam TTL."""
+    global _CACHED_EVENT, _CACHED_EVENT_AT
+    now = datetime.now(tz=timezone.utc)
+    if _CACHED_EVENT and _CACHED_EVENT_AT and (now - _CACHED_EVENT_AT) < _CACHE_TTL:
         return _CACHED_EVENT
     res = (
         supabase.table("event")
@@ -47,7 +53,11 @@ def _get_active_event():
         .execute()
     )
     if res.data:
-        _CACHED_EVENT = res.data[0]
+        _CACHED_EVENT    = res.data[0]
+        _CACHED_EVENT_AT = now
+    else:
+        _CACHED_EVENT    = None
+        _CACHED_EVENT_AT = None
     return _CACHED_EVENT
 
 
@@ -69,8 +79,9 @@ def _get_admin_id():
 
 
 def _invalidate_event_cache():
-    global _CACHED_EVENT
-    _CACHED_EVENT = None
+    global _CACHED_EVENT, _CACHED_EVENT_AT
+    _CACHED_EVENT    = None
+    _CACHED_EVENT_AT = None
 
 
 # ── Tap Endpoint ──────────────────────────────────────────────────────────────
@@ -178,7 +189,7 @@ def tap():
         else:
             update_res = (
                 supabase.table("kunjungan")
-                .update({"waktu_keluar": ts_iso})
+                .update({"waktu_keluar": ts_iso, "status": "keluar"})
                 .eq("member_id", member_id)
                 .eq("event_id",  event_id)
                 .eq("status",    "di_dalam")

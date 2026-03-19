@@ -1,17 +1,22 @@
 """
-Blueprint: Laporan (FIXED)
-───────────────────────────
+Blueprint: Laporan (EVENT-FIRST)
+─────────────────────────────────
 GET /api/reports         → REQ-REPORT-001  (Admin only)
 GET /api/reports/export  → REQ-REPORT-002  (Admin only)
 
-FIX: date.today() → tanggal WIB hari ini
-  HuggingFace berjalan UTC. date.today() mengembalikan tanggal UTC.
-  v_kunjungan_harian.tanggal = DATE(waktu_masuk AT TIME ZONE 'Asia/Jakarta') → WIB.
-  Mismatch ini menyebabkan laporan default hari ini kosong di pagi hari.
+Perubahan dari versi sebelumnya:
+  - tanggal sekarang OPSIONAL jika event_id disertakan.
+  - Jika event_id ada tanpa tanggal → kembalikan SEMUA hari event tsb.
+  - Jika event_id + tanggal → drill-down ke hari tertentu dalam event.
+  - Jika hanya tanggal (tanpa event_id) → behavior lama (per-hari, default hari ini).
+  - Response sekarang menyertakan tanggal_range: list tanggal unik yang punya data
+    → dipakai frontend untuk menampilkan pill-selector per hari.
+  - Export: tanggal opsional jika event_id ada; judul dokumen menyesuaikan scope.
 """
 
 import io
-from datetime import date, datetime, timedelta
+import re as _re
+from datetime import datetime, timedelta
 
 from flask import Blueprint, jsonify, request, send_file
 
@@ -31,25 +36,32 @@ def _today_wib() -> str:
 @reports_bp.route("/reports", methods=["GET"])
 @admin_only
 def get_reports():
-    # [FIX] Gunakan WIB bukan UTC sebagai default tanggal
-    tanggal  = request.args.get("tanggal", _today_wib())
-    event_id = request.args.get("event_id", "")
+    tanggal  = (request.args.get("tanggal")  or "").strip()
+    event_id = (request.args.get("event_id") or "").strip()
+
+    # Fallback: jika tidak ada event_id maupun tanggal, default ke hari ini
+    if not event_id and not tanggal:
+        tanggal = _today_wib()
 
     try:
         query = (
             supabase.table("v_kunjungan_harian")
             .select("*")
-            .eq("tanggal", tanggal)
             .order("waktu_masuk")
         )
         if event_id:
             query = query.eq("event_id", event_id)
+        if tanggal:
+            query = query.eq("tanggal", tanggal)
 
         result = query.execute()
         detail = result.data or []
 
-        nama_event      = detail[0].get("nama_event")  if detail else None
-        actual_event_id = detail[0].get("event_id")    if detail else event_id or None
+        nama_event      = detail[0].get("nama_event") if detail else None
+        actual_event_id = detail[0].get("event_id")   if detail else event_id or None
+
+        # Kumpulkan tanggal unik yang punya data → untuk pill-selector di frontend
+        tanggal_range = sorted({r["tanggal"] for r in detail if r.get("tanggal")})
 
         total_member = sum(1 for r in detail if r.get("tipe_pengunjung") == "member")
         total_biasa  = sum(1 for r in detail if r.get("tipe_pengunjung") == "biasa")
@@ -57,9 +69,10 @@ def get_reports():
         return jsonify({
             "status": "success",
             "data": {
-                "tanggal":    tanggal,
-                "event_id":   actual_event_id,
-                "nama_event": nama_event,
+                "tanggal":       tanggal or None,
+                "event_id":      actual_event_id,
+                "nama_event":    nama_event,
+                "tanggal_range": tanggal_range,
                 "ringkasan": {
                     "total_kunjungan": len(detail),
                     "total_member":    total_member,
@@ -73,48 +86,73 @@ def get_reports():
         return jsonify({"status": "error", "message": "Terjadi kesalahan pada server"}), 500
 
 
+
 # ── GET /reports/export ───────────────────────────────────────────────────
 
 @reports_bp.route("/reports/export", methods=["GET"])
 @admin_only
 def export_report():
-    fmt      = (request.args.get("format") or "").lower()
-    tanggal  = (request.args.get("tanggal") or "").strip()
-    event_id = request.args.get("event_id", "")
-
-    _bad_param = jsonify({
-        "status": "error",
-        "message": "Parameter format harus berupa 'pdf' atau 'excel', dan tanggal harus format YYYY-MM-DD",
-    }), 400
+    fmt      = (request.args.get("format")   or "").lower()
+    tanggal  = (request.args.get("tanggal")  or "").strip()
+    event_id = (request.args.get("event_id") or "").strip()
 
     if fmt not in ("pdf", "excel"):
-        return _bad_param
-    if not tanggal:
-        return _bad_param
-    try:
-        datetime.strptime(tanggal, "%Y-%m-%d")
-    except ValueError:
-        return _bad_param
+        return jsonify({
+            "status": "error",
+            "message": "Parameter format harus berupa 'pdf' atau 'excel'",
+        }), 400
+
+    # Minimal salah satu harus ada
+    if not event_id and not tanggal:
+        return jsonify({
+            "status": "error",
+            "message": "Parameter event_id atau tanggal harus disertakan",
+        }), 400
+
+    if tanggal:
+        try:
+            datetime.strptime(tanggal, "%Y-%m-%d")
+        except ValueError:
+            return jsonify({
+                "status": "error",
+                "message": "Format tanggal tidak valid. Gunakan YYYY-MM-DD",
+            }), 400
 
     try:
         query = (
             supabase.table("v_kunjungan_harian")
             .select("*")
-            .eq("tanggal", tanggal)
             .order("waktu_masuk")
         )
         if event_id:
             query = query.eq("event_id", event_id)
+        if tanggal:
+            query = query.eq("tanggal", tanggal)
 
         result     = query.execute()
         rows       = result.data or []
         nama_event = rows[0].get("nama_event", "-") if rows else "-"
 
+        # Tentukan scope_label (subtitle dokumen) dan filename_suffix
+        if tanggal:
+            scope_label     = f"Tanggal: {tanggal}"
+            filename_suffix = tanggal
+        else:
+            tanggal_unik = sorted({r["tanggal"] for r in rows if r.get("tanggal")})
+            if not tanggal_unik:
+                scope_label = "Seluruh Event"
+            elif len(tanggal_unik) == 1:
+                scope_label = f"Tanggal: {tanggal_unik[0]}"
+            else:
+                scope_label = f"Periode: {tanggal_unik[0]} s/d {tanggal_unik[-1]} ({len(tanggal_unik)} hari)"
+            safe_name       = _re.sub(r"[^a-zA-Z0-9_-]", "_", nama_event)[:30]
+            filename_suffix = safe_name
+
         if fmt == "excel":
-            data, filename = _generate_excel(rows, tanggal, nama_event)
+            data, filename = _generate_excel(rows, scope_label, nama_event, filename_suffix)
             mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         else:
-            data, filename = _generate_pdf(rows, tanggal, nama_event)
+            data, filename = _generate_pdf(rows, scope_label, nama_event, filename_suffix)
             mime = "application/pdf"
 
         return send_file(
@@ -135,21 +173,21 @@ def _fmt_ts(ts) -> str:
     return str(ts)[:19].replace("T", " ")
 
 
-def _generate_excel(rows, tanggal, nama_event):
+def _generate_excel(rows, scope_label, nama_event, filename_suffix):
     import openpyxl
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
 
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = f"Laporan {tanggal}"
+    ws.title = "Laporan Kunjungan"
 
     ws.merge_cells("A1:G1")
     ws["A1"] = "Laporan Kunjungan — Peken Banyumasan"
     ws["A1"].font = Font(bold=True, size=13)
     ws["A1"].alignment = Alignment(horizontal="center")
     ws.merge_cells("A2:G2")
-    ws["A2"] = f"{nama_event}  |  Tanggal: {tanggal}"
+    ws["A2"] = f"{nama_event}  |  {scope_label}"
     ws["A2"].alignment = Alignment(horizontal="center")
     ws.append([])
 
@@ -188,10 +226,10 @@ def _generate_excel(rows, tanggal, nama_event):
 
     buf = io.BytesIO()
     wb.save(buf)
-    return buf.getvalue(), f"laporan_kunjungan_{tanggal}.xlsx"
+    return buf.getvalue(), f"laporan_kunjungan_{filename_suffix}.xlsx"
 
 
-def _generate_pdf(rows, tanggal, nama_event):
+def _generate_pdf(rows, scope_label, nama_event, filename_suffix):
     from fpdf import FPDF
 
     pdf = FPDF(orientation="L", format="A4")
@@ -202,7 +240,7 @@ def _generate_pdf(rows, tanggal, nama_event):
     pdf.set_font("Helvetica", "B", 13)
     pdf.cell(0, 9, "Laporan Kunjungan — Peken Banyumasan", align="C", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 7, f"{nama_event}  |  Tanggal: {tanggal}", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 7, f"{nama_event}  |  {scope_label}", align="C", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(4)
 
     col_w   = [10, 20, 60, 48, 48, 30, 24]
@@ -240,4 +278,4 @@ def _generate_pdf(rows, tanggal, nama_event):
     pdf.cell(0, 7, f"Total Kunjungan: {len(rows)}   |   Member: {total_member}   |   Pengunjung Biasa: {total_biasa}",
              new_x="LMARGIN", new_y="NEXT")
 
-    return bytes(pdf.output()), f"laporan_kunjungan_{tanggal}.pdf"
+    return bytes(pdf.output()), f"laporan_kunjungan_{filename_suffix}.pdf"

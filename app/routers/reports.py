@@ -1,29 +1,26 @@
 """
-Blueprint: Laporan (EVENT-FIRST)
-─────────────────────────────────
+Router: Laporan (EVENT-FIRST)
+──────────────────────────────
 GET /api/reports         → REQ-REPORT-001  (Admin only)
 GET /api/reports/export  → REQ-REPORT-002  (Admin only)
 
-Perubahan dari versi sebelumnya:
-  - tanggal sekarang OPSIONAL jika event_id disertakan.
-  - Jika event_id ada tanpa tanggal → kembalikan SEMUA hari event tsb.
-  - Jika event_id + tanggal → drill-down ke hari tertentu dalam event.
-  - Jika hanya tanggal (tanpa event_id) → behavior lama (per-hari, default hari ini).
-  - Response sekarang menyertakan tanggal_range: list tanggal unik yang punya data
-    → dipakai frontend untuk menampilkan pill-selector per hari.
-  - Export: tanggal opsional jika event_id ada; judul dokumen menyesuaikan scope.
+- tanggal OPSIONAL jika event_id disertakan.
+- event_id + tanpa tanggal → semua hari event tsb.
+- event_id + tanggal → drill-down ke hari tertentu.
+- hanya tanggal (tanpa event_id) → default hari ini WIB.
+- Response menyertakan tanggal_range untuk pill-selector frontend.
 """
 
 import io
 import re as _re
 from datetime import datetime, timedelta
 
-from flask import Blueprint, jsonify, request, send_file
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
-from app.extensions import supabase
-from app.middleware.auth import admin_only
+from app.dependencies import CurrentUser, admin_only, supabase
 
-reports_bp = Blueprint("reports", __name__)
+router = APIRouter(prefix="/reports", tags=["Reports"])
 
 
 def _today_wib() -> str:
@@ -31,13 +28,16 @@ def _today_wib() -> str:
     return (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d")
 
 
-# ── GET /reports ──────────────────────────────────────────────────────────
+# ── GET /reports ──────────────────────────────────────────────────────────────
 
-@reports_bp.route("/reports", methods=["GET"])
-@admin_only
-def get_reports():
-    tanggal  = (request.args.get("tanggal")  or "").strip()
-    event_id = (request.args.get("event_id") or "").strip()
+@router.get("")
+def get_reports(
+    tanggal: str = Query(""),
+    event_id: str = Query(""),
+    _user: CurrentUser = Depends(admin_only),
+):
+    tanggal  = tanggal.strip()
+    event_id = event_id.strip()
 
     # Fallback: jika tidak ada event_id maupun tanggal, default ke hari ini
     if not event_id and not tanggal:
@@ -66,7 +66,7 @@ def get_reports():
         total_member = sum(1 for r in detail if r.get("tipe_pengunjung") == "member")
         total_biasa  = sum(1 for r in detail if r.get("tipe_pengunjung") == "biasa")
 
-        return jsonify({
+        return {
             "status": "success",
             "data": {
                 "tanggal":       tanggal or None,
@@ -80,43 +80,57 @@ def get_reports():
                 },
                 "detail": detail,
             },
-        }), 200
+        }
 
     except Exception:
-        return jsonify({"status": "error", "message": "Terjadi kesalahan pada server"}), 500
+        raise HTTPException(
+            status_code=500,
+            detail={"status": "error", "message": "Terjadi kesalahan pada server"},
+        )
 
 
+# ── GET /reports/export ───────────────────────────────────────────────────────
 
-# ── GET /reports/export ───────────────────────────────────────────────────
-
-@reports_bp.route("/reports/export", methods=["GET"])
-@admin_only
-def export_report():
-    fmt      = (request.args.get("format")   or "").lower()
-    tanggal  = (request.args.get("tanggal")  or "").strip()
-    event_id = (request.args.get("event_id") or "").strip()
+@router.get("/export")
+def export_report(
+    format: str = Query(""),
+    tanggal: str = Query(""),
+    event_id: str = Query(""),
+    _user: CurrentUser = Depends(admin_only),
+):
+    fmt      = format.lower().strip()
+    tanggal  = tanggal.strip()
+    event_id = event_id.strip()
 
     if fmt not in ("pdf", "excel"):
-        return jsonify({
-            "status": "error",
-            "message": "Parameter format harus berupa 'pdf' atau 'excel'",
-        }), 400
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "status": "error",
+                "message": "Parameter format harus berupa 'pdf' atau 'excel'",
+            },
+        )
 
-    # Minimal salah satu harus ada
     if not event_id and not tanggal:
-        return jsonify({
-            "status": "error",
-            "message": "Parameter event_id atau tanggal harus disertakan",
-        }), 400
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "status": "error",
+                "message": "Parameter event_id atau tanggal harus disertakan",
+            },
+        )
 
     if tanggal:
         try:
             datetime.strptime(tanggal, "%Y-%m-%d")
         except ValueError:
-            return jsonify({
-                "status": "error",
-                "message": "Format tanggal tidak valid. Gunakan YYYY-MM-DD",
-            }), 400
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "status": "error",
+                    "message": "Format tanggal tidak valid. Gunakan YYYY-MM-DD",
+                },
+            )
 
     try:
         query = (
@@ -133,7 +147,6 @@ def export_report():
         rows       = result.data or []
         nama_event = rows[0].get("nama_event", "-") if rows else "-"
 
-        # Tentukan scope_label (subtitle dokumen) dan filename_suffix
         if tanggal:
             scope_label     = f"Tanggal: {tanggal}"
             filename_suffix = tanggal
@@ -155,17 +168,22 @@ def export_report():
             data, filename = _generate_pdf(rows, scope_label, nama_event, filename_suffix)
             mime = "application/pdf"
 
-        return send_file(
+        return StreamingResponse(
             io.BytesIO(data),
-            mimetype=mime,
-            as_attachment=True,
-            download_name=filename,
+            media_type=mime,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+
+    except HTTPException:
+        raise
     except Exception:
-        return jsonify({"status": "error", "message": "Terjadi kesalahan pada server"}), 500
+        raise HTTPException(
+            status_code=500,
+            detail={"status": "error", "message": "Terjadi kesalahan pada server"},
+        )
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _fmt_ts(ts) -> str:
     if not ts:
@@ -275,7 +293,10 @@ def _generate_pdf(rows, scope_label, nama_event, filename_suffix):
     total_member = sum(1 for r in rows if r.get("tipe_pengunjung") == "member")
     total_biasa  = len(rows) - total_member
     pdf.set_font("Helvetica", "B", 8)
-    pdf.cell(0, 7, f"Total Kunjungan: {len(rows)}   |   Member: {total_member}   |   Pengunjung Biasa: {total_biasa}",
-             new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(
+        0, 7,
+        f"Total Kunjungan: {len(rows)}   |   Member: {total_member}   |   Pengunjung Biasa: {total_biasa}",
+        new_x="LMARGIN", new_y="NEXT",
+    )
 
     return bytes(pdf.output()), f"laporan_kunjungan_{filename_suffix}.pdf"

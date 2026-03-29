@@ -20,8 +20,9 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 # Copy source code
 COPY . .
 
-EXPOSE ${PORT:-7860}
-# PORT      — port listen (default 7860, Railway/Render/Fly set otomatis)
-# WORKERS   — jumlah Gunicorn worker (default 1 untuk free tier, naikkan di paid)
-# FLASK_DEBUG — "true" untuk verbose logging (jangan di production)
-CMD ["sh", "-c", "gunicorn run:app --bind 0.0.0.0:${PORT:-7860} --workers ${WORKERS:-1} --timeout 60 --access-logfile -"]
+EXPOSE ${PORT:-8000}
+
+# PORT      — port listen (default 8000, Railway/Render/Fly set otomatis)
+# WORKERS   — jumlah Uvicorn worker (default 1 untuk free tier, naikkan di paid)
+# APP_DEBUG — "true" untuk verbose logging (jangan di production)
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers ${WORKERS:-1}"]

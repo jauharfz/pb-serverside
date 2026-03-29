@@ -14,6 +14,9 @@ class Config:
     UMKM_API_URL: str = os.environ.get("UMKM_API_URL", "")
     UMKM_API_KEY: str = os.environ.get("UMKM_API_KEY", "")
 
-    # Flask
-    DEBUG: bool = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
-    PORT: int = int(os.environ.get("PORT", 5000))
+    # App
+    DEBUG: bool = os.environ.get("APP_DEBUG", "false").lower() == "true"
+    PORT: int = int(os.environ.get("PORT", 8000))
+
+
+config = Config()

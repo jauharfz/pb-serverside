@@ -1,23 +1,20 @@
 """
-Blueprint: Dashboard Stats (FIXED)
-────────────────────────────────────
-GET /api/dashboard/stats → REQ-DASH-001 s/d REQ-DASH-004 (Admin only)
+Router: Dashboard Stats
+────────────────────────
+GET /api/dashboard/stats → REQ-DASH-001 s/d REQ-DASH-004 (Admin & Petugas)
 
-FIX 1: date.today() → tanggal WIB hari ini
-  HuggingFace Spaces berjalan UTC. date.today() mengembalikan tanggal UTC
-  yang berbeda dari tanggal WIB antara 00:00–06:59 WIB. View v_dashboard_stats
-  menggunakan DATE(waktu_masuk AT TIME ZONE 'Asia/Jakarta') → tanggal WIB.
-  Mismatch ini menyebabkan stats selalu 0 di pagi hari meskipun ada data.
+Menggunakan tanggal WIB (UTC+7) sebagai default, bukan UTC,
+agar sinkron dengan view v_dashboard_stats yang menggunakan
+DATE(waktu_masuk AT TIME ZONE 'Asia/Jakarta').
 """
 
 from datetime import datetime, timedelta
 
-from flask import Blueprint, jsonify, request
+from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.extensions import supabase
-from app.middleware.auth import require_auth
+from app.dependencies import CurrentUser, require_auth, supabase
 
-dashboard_bp = Blueprint("dashboard", __name__)
+router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
 
 def _today_wib() -> str:
@@ -25,12 +22,13 @@ def _today_wib() -> str:
     return (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d")
 
 
-@dashboard_bp.route("/dashboard/stats", methods=["GET"])
-@require_auth
-def get_stats():
-    # [FIX] Gunakan WIB bukan UTC sebagai default tanggal
-    tanggal  = request.args.get("tanggal", _today_wib())
-    event_id = request.args.get("event_id", "")
+@router.get("/stats")
+def get_stats(
+    tanggal: str = Query(""),
+    event_id: str = Query(""),
+    _user: CurrentUser = Depends(require_auth),
+):
+    tanggal = tanggal or _today_wib()
 
     try:
         if not event_id:
@@ -43,7 +41,7 @@ def get_stats():
                 .execute()
             )
             if not ev_res or not ev_res.data:
-                return jsonify({
+                return {
                     "status": "success",
                     "data": {
                         "tanggal":      tanggal,
@@ -54,7 +52,7 @@ def get_stats():
                         "total_keluar": 0,
                         "total_harian": 0,
                     },
-                }), 200
+                }
             event_id   = ev_res.data[0]["id"]
             nama_event = ev_res.data[0]["nama_event"]
         else:
@@ -77,9 +75,9 @@ def get_stats():
         )
 
         if stats_res and stats_res.data:
-            return jsonify({"status": "success", "data": stats_res.data}), 200
+            return {"status": "success", "data": stats_res.data}
 
-        return jsonify({
+        return {
             "status": "success",
             "data": {
                 "tanggal":      tanggal,
@@ -90,7 +88,10 @@ def get_stats():
                 "total_keluar": 0,
                 "total_harian": 0,
             },
-        }), 200
+        }
 
     except Exception:
-        return jsonify({"status": "error", "message": "Terjadi kesalahan pada server"}), 500
+        raise HTTPException(
+            status_code=500,
+            detail={"status": "error", "message": "Terjadi kesalahan pada server"},
+        )

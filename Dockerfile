@@ -3,7 +3,6 @@ FROM python:3.12-slim AS builder
 
 WORKDIR /app
 
-# Install dependencies terlebih dahulu (layer caching)
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
   && pip install --no-cache-dir -r requirements.txt
@@ -13,16 +12,15 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Copy installed packages dan semua executables dari builder
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
-# Copy source code
 COPY . .
 
-EXPOSE ${PORT:-8000}
+# [FIX] HuggingFace Spaces Docker wajib listen di port 7860.
+# EXPOSE tidak support shell default ${VAR:-default}, harus eksplisit.
+EXPOSE 7860
 
-# PORT      — port listen (default 8000, Railway/Render/Fly set otomatis)
-# WORKERS   — jumlah Uvicorn worker (default 1 untuk free tier, naikkan di paid)
-# APP_DEBUG — "true" untuk verbose logging (jangan di production)
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers ${WORKERS:-1}"]
+# HuggingFace otomatis inject PORT=7860 — tidak perlu set manual di Secrets.
+# WORKERS default 1 untuk free tier HuggingFace CPU Basic.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7860"]

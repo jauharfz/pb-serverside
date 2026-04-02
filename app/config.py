@@ -17,6 +17,7 @@ class Config:
     # App
     DEBUG: bool = os.environ.get("APP_DEBUG", "false").lower() == "true"
     PORT: int = int(os.environ.get("PORT", 8000))
+    UMKM_USE_MOCK: bool = os.getenv("UMKM_USE_MOCK", "false").lower() == "true"
 
 
 config = Config()

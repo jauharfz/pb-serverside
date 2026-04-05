@@ -3,11 +3,12 @@ Router: Integrasi UMKM Eksternal
 ──────────────────────────────────
 GET /api/umkm → REQ-INTEG-001  (Admin only)
 
-FastAPI bertindak sebagai proxy ke API eksternal kelompok UMKM.
-URL dan API key dikonfigurasi via environment variable:
-  UMKM_API_URL  → endpoint API eksternal
-  UMKM_API_KEY  → bearer token API eksternal (jika ada)
-  UMKM_USE_MOCK → jika "true", gunakan data mock (untuk dev/staging)
+Dua mode operasi dikontrol via env var UMKM_USE_MOCK:
+  UMKM_USE_MOCK=true  → kembalikan data dummy statis (default saat dev/staging).
+  UMKM_USE_MOCK=false → proxy ke UMKM Backend GET /api/public/tenant.
+
+URL UMKM Backend dikonfigurasi via:
+  UMKM_API_BASE_URL → base URL, misal https://jauharfz-umkm-serverside.hf.space
 """
 
 import requests as http
@@ -18,17 +19,54 @@ from app.dependencies import CurrentUser, admin_only
 
 router = APIRouter(prefix="/umkm", tags=["UMKM"])
 
-_TIMEOUT = 10
+_TIMEOUT = 10  # detik
 
-_MOCK_DATA = [
-    {"id": "aaa00001-0000-0000-0000-000000000001", "nama_tenant": "Warung Bu Sari",        "kategori": "Makanan", "nomor_stand": "A01", "deskripsi": "Nasi liwet dan lauk-pauk khas Banyumas"},
-    {"id": "aaa00001-0000-0000-0000-000000000002", "nama_tenant": "Dawet Ireng Pak Gito",  "kategori": "Minuman", "nomor_stand": "A02", "deskripsi": "Dawet ireng legendaris sejak 1990"},
-    {"id": "aaa00001-0000-0000-0000-000000000003", "nama_tenant": "Batik Banyumas Asri",   "kategori": "Fashion", "nomor_stand": "B01", "deskripsi": "Batik tulis motif sekar jagad khas Banyumas"},
-    {"id": "aaa00001-0000-0000-0000-000000000004", "nama_tenant": "Getuk Goreng Sokaraja", "kategori": "Makanan", "nomor_stand": "B02", "deskripsi": "Getuk goreng original Sokaraja"},
-    {"id": "aaa00001-0000-0000-0000-000000000005", "nama_tenant": "Kopi Robusta Merden",   "kategori": "Minuman", "nomor_stand": "C01", "deskripsi": "Single origin robusta dari lereng Slamet"},
-    {"id": "aaa00001-0000-0000-0000-000000000006", "nama_tenant": "Kriya Bambu Lestari",   "kategori": "Kriya",   "nomor_stand": "C02", "deskripsi": "Kerajinan bambu anyam dan ukir"},
+# ── Data mock untuk dev / staging ─────────────────────────────────────────────
+_MOCK_TENANTS = [
+    {
+        "id": "mock-tenant-001",
+        "nama_tenant": "Sate Blengong Bu Yati",
+        "kategori": "kuliner",
+        "nomor_stand": "A-12",
+        "deskripsi": "Sate Blengong khas Banyumas dengan bumbu rahasia turun-temurun.",
+        "created_at": "2026-03-01T00:00:00+07:00",
+    },
+    {
+        "id": "mock-tenant-002",
+        "nama_tenant": "Batik Ngapak Pak Darmo",
+        "kategori": "fashion",
+        "nomor_stand": "B-03",
+        "deskripsi": "Koleksi batik motif khas Banyumas dengan teknik tulis tangan.",
+        "created_at": "2026-03-01T00:00:00+07:00",
+    },
+    {
+        "id": "mock-tenant-003",
+        "nama_tenant": "Keripik Tempe Mak Jum",
+        "kategori": "kuliner",
+        "nomor_stand": "A-05",
+        "deskripsi": "Keripik tempe renyah aneka rasa, produksi rumahan Banyumas.",
+        "created_at": "2026-03-01T00:00:00+07:00",
+    },
+    {
+        "id": "mock-tenant-004",
+        "nama_tenant": "Anyaman Bambu Pak Slamet",
+        "kategori": "kerajinan",
+        "nomor_stand": "C-02",
+        "deskripsi": "Kerajinan anyaman bambu tradisional — tas, tudung saji, tikar.",
+        "created_at": "2026-03-01T00:00:00+07:00",
+    },
+    {
+        "id": "mock-tenant-005",
+        "nama_tenant": "Es Dawet Ayu Bu Parti",
+        "kategori": "minuman",
+        "nomor_stand": "A-08",
+        "deskripsi": "Es dawet ayu segar dengan santan murni dan gula aren asli.",
+        "created_at": "2026-03-01T00:00:00+07:00",
+    },
 ]
 
+
+# ── GET /umkm ──────────────────────────────────────────────────────────────────
 
 @router.get("")
 def get_umkm(
@@ -36,44 +74,76 @@ def get_umkm(
     is_aktif: str = Query(""),
     _user: CurrentUser = Depends(admin_only),
 ):
-    # ── MOCK MODE ──────────────────────────────────────────────────────────
-    if getattr(config, "UMKM_USE_MOCK", False):
-        data = _MOCK_DATA
+    # ── Mode mock ─────────────────────────────────────────────────────────────
+    if config.UMKM_USE_MOCK:
+        data = list(_MOCK_TENANTS)
         if kategori:
-            data = [d for d in data if d["kategori"] == kategori]
-        return {"status": "success", "source": "mock", "data": data}
-    # ───────────────────────────────────────────────────────────────────────
+            data = [t for t in data if kategori.lower() in t["kategori"].lower()]
+        return {
+            "status": "success",
+            "source": "mock",
+            "data": data,
+            "_info": "Data mock — set UMKM_USE_MOCK=false untuk data nyata dari API UMKM.",
+        }
 
-    api_url = config.UMKM_API_URL.strip()
-    api_key = config.UMKM_API_KEY.strip()
+    # ── Mode live: proxy ke UMKM Backend ────────────────────────────────────
+    # Prioritaskan UMKM_API_BASE_URL; fallback ke UMKM_API_URL lama (deprecated).
+    api_base = (config.UMKM_API_BASE_URL or config.UMKM_API_URL).strip()
 
-    if not api_url:
+    if not api_base:
         return {
             "status": "success",
             "source": "external_umkm_api",
             "data": [],
-            "_info": "UMKM_API_URL belum dikonfigurasi",
+            "_info": "UMKM_API_BASE_URL belum dikonfigurasi.",
         }
+
+    # Endpoint publik UMKM Backend — tidak memerlukan auth
+    tenant_url = f"{api_base.rstrip('/')}/api/public/tenant"
 
     params: dict = {}
     if kategori:
         params["kategori"] = kategori
-    if is_aktif:
-        params["is_aktif"] = is_aktif
+    # is_aktif tidak diforward ke /public/tenant karena endpoint tersebut
+    # selalu hanya mengembalikan UMKM berstatus approved.
 
     headers: dict = {"Accept": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    # UMKM_API_KEY sudah tidak diperlukan untuk public endpoint,
+    # tapi tetap dikirim jika dikonfigurasi (forward compat).
+    if config.UMKM_API_KEY:
+        headers["Authorization"] = f"Bearer {config.UMKM_API_KEY}"
 
     try:
-        resp = http.get(api_url, params=params, headers=headers, timeout=_TIMEOUT)
+        resp = http.get(tenant_url, params=params, headers=headers, timeout=_TIMEOUT)
         resp.raise_for_status()
         external = resp.json()
-        data = external if isinstance(external, list) else external.get("data", [])
-        return {"status": "success", "source": "external_umkm_api", "data": data}
 
-    except (http.exceptions.Timeout, http.exceptions.HTTPError, Exception):
+        # UMKM Backend mengembalikan { status, data: [...] }
+        data = (
+            external.get("data", [])
+            if isinstance(external, dict)
+            else external
+        )
+
+        return {
+            "status": "success",
+            "source": "external_umkm_api",
+            "data": data,
+        }
+
+    except http.exceptions.Timeout:
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "status": "error",
+                "message": "Timeout saat menghubungi API UMKM. Coba lagi beberapa saat.",
+            },
+        )
+    except Exception:
         raise HTTPException(
             status_code=502,
-            detail={"status": "error", "message": "Gagal mengambil data dari API eksternal kelompok UMKM"},
+            detail={
+                "status": "error",
+                "message": "Gagal mengambil data dari API eksternal kelompok UMKM.",
+            },
         )

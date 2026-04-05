@@ -48,6 +48,52 @@ def _today() -> str:
     return wib.strftime("%Y-%m-%d")
 
 
+# ── GET /events/public ────────────────────────────────────────────────────────
+# Endpoint publik TANPA auth — dipakai UMKM Backend untuk sinkronisasi countdown.
+# Mengembalikan event paling relevan:
+#   1. Event dengan status='aktif' (sedang berlangsung), atau
+#   2. Event mendatang terdekat (status='selesai' + tanggal > hari ini)
+# Return null jika tidak ada event aktif maupun mendatang.
+# Field: { id, nama_event, tanggal, lokasi, status }
+# Catatan: tanggal adalah DATE saja (YYYY-MM-DD), tanpa jam.
+#   UMKM Frontend menggunakan tanggal + "T08:00:00+07:00" sebagai target countdown.
+
+@router.get("/public")
+def get_public_event():
+    today = _today()
+    try:
+        # Coba ambil event aktif dulu
+        aktif_res = (
+            supabase.table("event")
+            .select("id, nama_event, tanggal, lokasi, status")
+            .eq("status", "aktif")
+            .order("tanggal", desc=False)
+            .limit(1)
+            .execute()
+        )
+        if aktif_res.data:
+            return {"status": "success", "data": aktif_res.data[0]}
+
+        # Tidak ada yang aktif — cari event mendatang terdekat
+        upcoming_res = (
+            supabase.table("event")
+            .select("id, nama_event, tanggal, lokasi, status")
+            .eq("status", "selesai")
+            .gt("tanggal", today)
+            .order("tanggal", desc=False)
+            .limit(1)
+            .execute()
+        )
+        if upcoming_res.data:
+            return {"status": "success", "data": upcoming_res.data[0]}
+
+        # Tidak ada event aktif maupun mendatang
+        return {"status": "success", "data": None}
+
+    except Exception:
+        return {"status": "success", "data": None}
+
+
 def _deactivate_other_events(exclude_id: str | None = None):
     """Nonaktifkan semua event aktif kecuali exclude_id."""
     query = (

@@ -17,7 +17,7 @@ Format response tetap kompatibel dengan Gate Frontend (Tenants.jsx):
                        berlaku_mulai, berlaku_hingga, is_aktif }, ... ] }
 """
 
-import requests as http
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.config import config
@@ -79,7 +79,7 @@ _MOCK_DISCOUNTS = [
 # ── GET /discounts ─────────────────────────────────────────────────────────────
 
 @router.get("")
-def get_discounts(
+async def get_discounts(
     is_aktif: str = Query("true"),
     tenant_id: str = Query(""),
     _user: CurrentUser = Depends(require_auth),
@@ -121,7 +121,8 @@ def get_discounts(
     headers: dict = {"Accept": "application/json"}
 
     try:
-        resp = http.get(diskon_url, params=params, headers=headers, timeout=_TIMEOUT)
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as _client:
+            resp = await _client.get(diskon_url, params=params, headers=headers)
         resp.raise_for_status()
         external = resp.json()
         data = (
@@ -131,7 +132,7 @@ def get_discounts(
         )
         return {"status": "success", "data": data}
 
-    except http.exceptions.Timeout:
+    except httpx.TimeoutException:
         raise HTTPException(
             status_code=504,
             detail={

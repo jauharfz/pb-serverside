@@ -11,7 +11,7 @@ URL UMKM Backend dikonfigurasi via:
   UMKM_API_BASE_URL → base URL, misal https://jauharfz-umkm-serverside.hf.space
 """
 
-import requests as http
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.config import config
@@ -69,7 +69,7 @@ _MOCK_TENANTS = [
 # ── GET /umkm ──────────────────────────────────────────────────────────────────
 
 @router.get("")
-def get_umkm(
+async def get_umkm(
     kategori: str = Query(""),
     is_aktif: str = Query(""),
     _user: CurrentUser = Depends(admin_only),
@@ -114,7 +114,8 @@ def get_umkm(
         headers["Authorization"] = f"Bearer {config.UMKM_API_KEY}"
 
     try:
-        resp = http.get(tenant_url, params=params, headers=headers, timeout=_TIMEOUT)
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as _client:
+            resp = await _client.get(tenant_url, params=params, headers=headers)
         resp.raise_for_status()
         external = resp.json()
 
@@ -131,7 +132,7 @@ def get_umkm(
             "data": data,
         }
 
-    except http.exceptions.Timeout:
+    except httpx.TimeoutException:
         raise HTTPException(
             status_code=504,
             detail={

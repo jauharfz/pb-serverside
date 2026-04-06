@@ -1,9 +1,11 @@
 """
 Router: Integrasi UMKM Eksternal
 ──────────────────────────────────
-GET /api/umkm → REQ-INTEG-001  (Admin only)
+GET  /api/umkm                        → REQ-INTEG-001  (Admin only)
+GET  /api/umkm/registrations          → List pendaftaran UMKM (Admin only)
+PATCH /api/umkm/registrations/{id}    → Approve / reject pendaftaran (Admin only)
 
-Dua mode operasi dikontrol via env var UMKM_USE_MOCK:
+Mode operasi GET /api/umkm dikontrol via env var UMKM_USE_MOCK:
   UMKM_USE_MOCK=true  → kembalikan data dummy statis (default saat dev/staging).
   UMKM_USE_MOCK=false → proxy ke UMKM Backend GET /api/public/tenant.
 
@@ -65,6 +67,17 @@ _MOCK_TENANTS = [
     },
 ]
 
+# ── Helper: build UMKM admin URL ───────────────────────────────────────────────
+def _get_umkm_base() -> str:
+    return (config.UMKM_API_BASE_URL or config.UMKM_API_URL).strip().rstrip("/")
+
+
+def _admin_headers() -> dict:
+    headers = {"Accept": "application/json"}
+    if config.UMKM_ADMIN_SECRET_KEY:
+        headers["X-Admin-Key"] = config.UMKM_ADMIN_SECRET_KEY
+    return headers
+
 
 # ── GET /umkm ──────────────────────────────────────────────────────────────────
 
@@ -87,8 +100,7 @@ async def get_umkm(
         }
 
     # ── Mode live: proxy ke UMKM Backend ────────────────────────────────────
-    # Prioritaskan UMKM_API_BASE_URL; fallback ke UMKM_API_URL lama (deprecated).
-    api_base = (config.UMKM_API_BASE_URL or config.UMKM_API_URL).strip()
+    api_base = _get_umkm_base()
 
     if not api_base:
         return {
@@ -98,18 +110,13 @@ async def get_umkm(
             "_info": "UMKM_API_BASE_URL belum dikonfigurasi.",
         }
 
-    # Endpoint publik UMKM Backend — tidak memerlukan auth
-    tenant_url = f"{api_base.rstrip('/')}/api/public/tenant"
+    tenant_url = f"{api_base}/api/public/tenant"
 
     params: dict = {}
     if kategori:
         params["kategori"] = kategori
-    # is_aktif tidak diforward ke /public/tenant karena endpoint tersebut
-    # selalu hanya mengembalikan UMKM berstatus approved.
 
     headers: dict = {"Accept": "application/json"}
-    # UMKM_API_KEY sudah tidak diperlukan untuk public endpoint,
-    # tapi tetap dikirim jika dikonfigurasi (forward compat).
     if config.UMKM_API_KEY:
         headers["Authorization"] = f"Bearer {config.UMKM_API_KEY}"
 
@@ -119,7 +126,6 @@ async def get_umkm(
         resp.raise_for_status()
         external = resp.json()
 
-        # UMKM Backend mengembalikan { status, data: [...] }
         data = (
             external.get("data", [])
             if isinstance(external, dict)
@@ -147,4 +153,116 @@ async def get_umkm(
                 "status": "error",
                 "message": "Gagal mengambil data dari API eksternal kelompok UMKM.",
             },
+        )
+
+
+# ── GET /umkm/registrations ────────────────────────────────────────────────────
+
+@router.get("/registrations")
+async def get_umkm_registrations(
+    status: str = Query("", description="Filter: pending | approved | rejected | (kosong = semua)"),
+    _user: CurrentUser = Depends(admin_only),
+):
+    """
+    List pendaftaran UMKM dari UMKM Backend.
+    Admin gate menggunakan ini untuk melihat permohonan yang masuk.
+    """
+    api_base = _get_umkm_base()
+
+    if not api_base:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "error",
+                "message": "UMKM_API_BASE_URL belum dikonfigurasi. Hubungkan ke UMKM Backend terlebih dahulu.",
+            },
+        )
+
+    params = {}
+    if status:
+        params["status"] = status
+
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await client.get(
+                f"{api_base}/api/admin/registrations",
+                params=params,
+                headers=_admin_headers(),
+            )
+        resp.raise_for_status()
+        return resp.json()
+
+    except httpx.TimeoutException:
+        raise HTTPException(
+            status_code=504,
+            detail={"status": "error", "message": "Timeout saat menghubungi UMKM Backend."},
+        )
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(
+            status_code=e.response.status_code,
+            detail=e.response.json() if e.response.content else {"status": "error", "message": "Error dari UMKM Backend."},
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=502,
+            detail={"status": "error", "message": "Gagal mengambil data pendaftaran dari UMKM Backend."},
+        )
+
+
+# ── PATCH /umkm/registrations/{umkm_id} ───────────────────────────────────────
+
+@router.patch("/registrations/{umkm_id}")
+async def update_umkm_registration(
+    umkm_id: str,
+    body: dict,
+    _user: CurrentUser = Depends(admin_only),
+):
+    """
+    Approve atau reject pendaftaran UMKM.
+    Body: { "status": "approved" | "rejected" }
+
+    Endpoint ini mem-proxy request ke UMKM Backend /api/admin/registrations/{id}.
+    """
+    api_base = _get_umkm_base()
+
+    if not api_base:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "error",
+                "message": "UMKM_API_BASE_URL belum dikonfigurasi.",
+            },
+        )
+
+    new_status = (body.get("status") or "").strip()
+    if new_status not in ("approved", "rejected"):
+        raise HTTPException(
+            status_code=422,
+            detail={"status": "error", "message": "Status harus 'approved' atau 'rejected'."},
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await client.patch(
+                f"{api_base}/api/admin/registrations/{umkm_id}",
+                json={"status": new_status},
+                headers=_admin_headers(),
+            )
+        resp.raise_for_status()
+        return resp.json()
+
+    except httpx.TimeoutException:
+        raise HTTPException(
+            status_code=504,
+            detail={"status": "error", "message": "Timeout saat menghubungi UMKM Backend."},
+        )
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(
+            status_code=e.response.status_code,
+            detail=e.response.json() if e.response.content else {"status": "error", "message": "Error dari UMKM Backend."},
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=502,
+            detail={"status": "error", "message": "Gagal memperbarui status pendaftaran di UMKM Backend."},
         )

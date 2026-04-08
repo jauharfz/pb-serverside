@@ -11,23 +11,24 @@ class Config:
     SUPABASE_JWT_SECRET: str = os.environ.get("SUPABASE_JWT_SECRET", "")
 
     # ── Integrasi API Eksternal Kelompok UMKM (REQ-INTEG-001) ────────────
-    # Base URL API UMKM: misal https://jauharfz-umkm-serverside.hf.space
-    # Endpoint public/tenant, public/diskon, dan admin/* akan di-append otomatis.
     UMKM_API_BASE_URL: str = os.environ.get("UMKM_API_BASE_URL", "")
-
-    # Deprecated — hanya untuk backward compat. Gunakan UMKM_API_BASE_URL.
-    UMKM_API_URL: str = os.environ.get("UMKM_API_URL", "")
+    UMKM_API_URL: str = os.environ.get("UMKM_API_URL", "")       # deprecated, backward compat
     UMKM_API_KEY: str = os.environ.get("UMKM_API_KEY", "")
 
     # ── Admin Secret Key (service-to-service ke UMKM Backend) ────────────
-    # Harus sama dengan ADMIN_SECRET_KEY di umkm-serverside (.env).
-    # Dikirimkan via header X-Admin-Key ke endpoint /api/admin/* UMKM Backend.
-    # Buat dengan: python -c "import secrets; print(secrets.token_hex(32))"
+    # Harus sama dengan ADMIN_SECRET_KEY di umkm-serverside.
+    # Dikirim via header X-Admin-Key ke /api/admin/* UMKM Backend.
     UMKM_ADMIN_SECRET_KEY: str = os.environ.get("UMKM_ADMIN_SECRET_KEY", "")
 
+    # ── Member Lookup API Key (NEW) ───────────────────────────────────────
+    # Shared secret antara Gate Backend dan UMKM (frontend/backend).
+    # Digunakan oleh UMKM untuk memanggil GET /api/members/lookup.
+    # Harus sama dengan GATE_LOOKUP_KEY di UMKM Backend/Frontend .env.
+    # Generate: python -c "import secrets; print(secrets.token_hex(32))"
+    # Set di HuggingFace Spaces: Settings → Repository secrets → MEMBER_LOOKUP_API_KEY
+    MEMBER_LOOKUP_API_KEY: str = os.environ.get("MEMBER_LOOKUP_API_KEY", "")
+
     # Flag mock data integrasi UMKM.
-    # true  → kembalikan data dummy hardcode (untuk dev/testing).
-    # false → panggil API UMKM sungguhan via UMKM_API_BASE_URL.
     UMKM_USE_MOCK: bool = os.environ.get("UMKM_USE_MOCK", "true").lower() == "true"
 
     # App

@@ -1,110 +1,146 @@
-# backend-app/app/routers/profile.py
+"""
+Router: Profil & Pengaturan Akun Admin
+────────────────────────────────────────
+GET  /api/auth/me       → ambil data profil sendiri
+PUT  /api/auth/profile  → update nama
+PUT  /api/auth/password → ganti password (verifikasi password lama dulu)
+
+Semua endpoint butuh token Bearer (require_auth).
+Hanya menyentuh row milik user yang sedang login (current_user.user_id).
+"""
+
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, EmailStr
-from app.deps import get_current_admin  # sudah ada di codebase kamu
-from app.database import supabase       # supabase client (service_role)
-import os
+from pydantic import BaseModel
 
-router = APIRouter(prefix="/profile", tags=["Profile"])
+from app.dependencies import CurrentUser, require_auth, supabase
 
-# ── Schema ────────────────────────────────────────────────────────
+router = APIRouter(tags=["Profil Admin"])
 
-class ProfileUpdate(BaseModel):
+
+# ── Schemas ───────────────────────────────────────────────────────────────────
+
+class UpdateNamaBody(BaseModel):
     nama: str
 
-class PasswordUpdate(BaseModel):
+
+class UpdatePasswordBody(BaseModel):
     password_lama: str
     password_baru: str
 
-class ProfileResponse(BaseModel):
-    id: str
-    nama: str
-    email: str
-    role: str
 
+# ── Helper internal ───────────────────────────────────────────────────────────
 
-# ── GET /api/profile ──────────────────────────────────────────────
-@router.get("", response_model=ProfileResponse)
-async def get_profile(current_admin=Depends(get_current_admin)):
-    """Ambil data profile admin yang sedang login."""
-    result = (
+def _get_admin_row(user_id: str) -> dict:
+    """Ambil row admin dari DB. Raise 404 jika tidak ada."""
+    res = (
         supabase.table("admin")
         .select("id, nama, email, role")
-        .eq("id", current_admin["id"])
-        .single()
+        .eq("id", user_id)
+        .maybe_single()
         .execute()
     )
-    if not result.data:
-        raise HTTPException(status_code=404, detail="Profile tidak ditemukan")
-    return result.data
+    if not res or res.data is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"status": "error", "message": "Profil tidak ditemukan"},
+        )
+    return res.data
 
 
-# ── PUT /api/profile ──────────────────────────────────────────────
-@router.put("", response_model=ProfileResponse)
-async def update_profile(
-    body: ProfileUpdate,
-    current_admin=Depends(get_current_admin)
+# ── GET /api/auth/me ──────────────────────────────────────────────────────────
+
+@router.get("/auth/me")
+def get_me(current_user: CurrentUser = Depends(require_auth)):
+    """Ambil data profil admin yang sedang login."""
+    data = _get_admin_row(current_user.user_id)
+    return {"status": "success", "data": data}
+
+
+# ── PUT /api/auth/profile ─────────────────────────────────────────────────────
+
+@router.put("/auth/profile")
+def update_nama(
+    body: UpdateNamaBody,
+    current_user: CurrentUser = Depends(require_auth),
 ):
-    """Update nama admin."""
-    result = (
+    """Update nama tampilan admin yang sedang login."""
+    nama = body.nama.strip()
+    if not nama:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"status": "error", "message": "Nama tidak boleh kosong"},
+        )
+
+    res = (
         supabase.table("admin")
-        .update({"nama": body.nama})
-        .eq("id", current_admin["id"])
+        .update({"nama": nama})
+        .eq("id", current_user.user_id)
         .select("id, nama, email, role")
-        .single()
+        .maybe_single()
         .execute()
     )
-    if not result.data:
-        raise HTTPException(status_code=404, detail="Gagal update profile")
-    return result.data
+    if not res or res.data is None:
+        raise HTTPException(
+            status_code=500,
+            detail={"status": "error", "message": "Gagal memperbarui nama"},
+        )
+    return {
+        "status": "success",
+        "message": "Nama berhasil diperbarui",
+        "data": res.data,
+    }
 
 
-# ── PUT /api/profile/password ─────────────────────────────────────
-@router.put("/password")
-async def update_password(
-    body: PasswordUpdate,
-    current_admin=Depends(get_current_admin)
+# ── PUT /api/auth/password ────────────────────────────────────────────────────
+
+@router.put("/auth/password")
+def update_password(
+    body: UpdatePasswordBody,
+    current_user: CurrentUser = Depends(require_auth),
 ):
     """
     Ganti password admin.
-    Verifikasi password lama dulu dengan mencoba sign-in,
-    lalu update via admin API jika valid.
+    Alur: verifikasi password lama via sign_in → update via admin API.
+    Email diambil dari tabel admin (bukan dari body) untuk mencegah spoofing.
     """
-    # Step 1: Verifikasi password lama
-    try:
-        verify = supabase.auth.sign_in_with_password({
-            "email": current_admin["email"],
-            "password": body.password_lama,
-        })
-        if not verify.user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Password lama tidak sesuai"
-            )
-    except Exception as e:
-        # Supabase throw exception jika credentials salah
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Password lama tidak sesuai"
-        )
-
-    # Step 2: Validasi password baru
     if len(body.password_baru) < 8:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Password baru minimal 8 karakter"
+            detail={"status": "error", "message": "Password baru minimal 8 karakter"},
         )
 
-    # Step 3: Update password via Supabase Admin API
+    # Ambil email dari DB — jangan percaya body
+    admin_data = _get_admin_row(current_user.user_id)
+    email = admin_data["email"]
+
+    # Verifikasi password lama
+    try:
+        verify = supabase.auth.sign_in_with_password(
+            {"email": email, "password": body.password_lama}
+        )
+        if not verify.user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"status": "error", "message": "Password lama tidak sesuai"},
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"status": "error", "message": "Password lama tidak sesuai"},
+        )
+
+    # Update password via Supabase Admin API
     try:
         supabase.auth.admin.update_user_by_id(
-            current_admin["id"],
-            {"password": body.password_baru}
+            current_user.user_id,
+            {"password": body.password_baru},
         )
     except Exception as e:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Gagal update password: {str(e)}"
+            status_code=500,
+            detail={"status": "error", "message": f"Gagal mengubah password: {str(e)}"},
         )
 
-    return {"message": "Password berhasil diubah"}
+    return {"status": "success", "message": "Password berhasil diubah"}

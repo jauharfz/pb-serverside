@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import config
-from app.routers import auth, dashboard, discounts, events, members, nfc, reports, umkm, visitors, profile
+from app.routers import auth, dashboard, discounts, events, members, nfc, profile, reports, umkm, visitors
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -43,6 +43,7 @@ app.add_middleware(
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(auth.router,      prefix="/api/auth")
+app.include_router(profile.router,   prefix="/api")
 app.include_router(nfc.router,       prefix="/api")
 app.include_router(members.router,   prefix="/api")
 app.include_router(visitors.router,  prefix="/api")
@@ -51,4 +52,3 @@ app.include_router(reports.router,   prefix="/api")
 app.include_router(discounts.router, prefix="/api")
 app.include_router(umkm.router,      prefix="/api")
 app.include_router(events.router,    prefix="/api")
-app.include_router(profile.router, prefix="/api")

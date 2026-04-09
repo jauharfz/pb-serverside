@@ -16,6 +16,7 @@ Cache TTL: 60 detik.
 """
 
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel

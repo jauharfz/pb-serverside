@@ -24,10 +24,11 @@ def login(body: LoginBody):
     password = body.password
 
     if not email or not password:
-        return {
-            "status": "error",
-            "message": "Field email dan password wajib diisi",
-        }, 422
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=422,
+            detail={"status": "error", "message": "Field email dan password wajib diisi"},
+        )
 
     # ── Supabase Auth ─────────────────────────────────────────────────────
     try:

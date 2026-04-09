@@ -163,38 +163,34 @@ class CreateMemberBody(BaseModel):
     nfc_uid: str
     nama: str
     no_hp: str
-    status: str
-    tanggal_daftar: str
+    status: Optional[str] = "aktif"          # default: aktif (server sets this)
+    tanggal_daftar: Optional[str] = None      # default: hari ini (server sets this)
     email: Optional[str] = None
 
 
 @router.post("", status_code=201)
 def create_member(body: CreateMemberBody, _user: CurrentUser = Depends(admin_only)):
-    if not body.nfc_uid or not body.nama or not body.no_hp or not body.status or not body.tanggal_daftar:
+    if not body.nfc_uid or not body.nama or not body.no_hp:
         raise HTTPException(
             status_code=422,
             detail={
                 "status": "error",
-                "message": "Field nfc_uid, nama, no_hp, status, dan tanggal_daftar wajib diisi",
+                "message": "Field nfc_uid, nama, dan no_hp wajib diisi",
             },
         )
 
-    if body.status not in ("aktif", "nonaktif"):
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "status": "error",
-                "message": "Format data tidak valid. Periksa kembali field yang dikirimkan",
-            },
-        )
+    # Server menentukan nilai default — client tidak bisa salah input
+    from datetime import date
+    resolved_status = body.status if body.status in ("aktif", "nonaktif") else "aktif"
+    resolved_tanggal = body.tanggal_daftar or date.today().isoformat()
 
     insert_payload = {
         "nfc_uid":        body.nfc_uid.strip(),
         "nama":           body.nama.strip(),
         "no_hp":          body.no_hp.strip(),
         "email":          body.email or None,
-        "status":         body.status,
-        "tanggal_daftar": body.tanggal_daftar,
+        "status":         resolved_status,
+        "tanggal_daftar": resolved_tanggal,
     }
 
     try:

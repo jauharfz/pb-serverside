@@ -81,28 +81,33 @@ def _invalidate_event_cache():
 
 class TapBody(BaseModel):
     uid: str
-    timestamp: str
+    timestamp: Optional[str] = None  # opsional — advisory only, server selalu pakai NOW()
 
 
 @router.post("/tap")
 def tap(body: TapBody):
     uid = body.uid.strip()
-    timestamp_str = body.timestamp.strip()
 
-    if not uid or not timestamp_str:
+    if not uid:
         raise HTTPException(
             status_code=422,
-            detail={"status": "error", "message": "Format UID atau timestamp tidak valid"},
+            detail={"status": "error", "message": "Field uid wajib diisi"},
         )
 
-    try:
-        timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-        ts_iso = timestamp.isoformat()
-    except ValueError:
-        raise HTTPException(
-            status_code=422,
-            detail={"status": "error", "message": "Format UID atau timestamp tidak valid"},
-        )
+    # Server selalu pakai waktu server sebagai sumber truth
+    server_now = datetime.now(tz=timezone.utc)
+    waktu_masuk_iso = server_now.isoformat()
+
+    # Simpan reader_timestamp untuk audit jika ada & selisih > 30 detik
+    reader_ts_iso: str | None = None
+    if body.timestamp:
+        try:
+            reader_ts = datetime.fromisoformat(body.timestamp.strip().replace("Z", "+00:00"))
+            selisih_detik = abs((server_now - reader_ts).total_seconds())
+            if selisih_detik > 30:
+                reader_ts_iso = reader_ts.isoformat()  # log untuk audit
+        except ValueError:
+            pass  # timestamp tidak valid — abaikan, lanjut dengan server time
 
     try:
         # ── 1. Validasi UID via RPC (selalu fresh, tidak di-cache) ────────
@@ -148,7 +153,7 @@ def tap(body: TapBody):
                     "event_id":        event_id,
                     "member_id":       member_id,
                     "tipe_pengunjung": "member",
-                    "waktu_masuk":     ts_iso,
+                    "waktu_masuk":     waktu_masuk_iso,
                     "waktu_keluar":    None,
                     "status":          "di_dalam",
                     "dicatat_oleh":    dicatat_oleh,
@@ -185,7 +190,7 @@ def tap(body: TapBody):
         else:
             update_res = (
                 supabase.table("kunjungan")
-                .update({"waktu_keluar": ts_iso, "status": "keluar"})
+                .update({"waktu_keluar": waktu_masuk_iso, "status": "keluar"})
                 .eq("member_id", member_id)
                 .eq("event_id",  event_id)
                 .eq("status",    "di_dalam")

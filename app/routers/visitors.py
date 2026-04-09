@@ -28,6 +28,8 @@ def get_visitors(
     event_id: str = Query(""),
     tipe_pengunjung: str = Query(""),
     status: str = Query(""),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     _user: CurrentUser = Depends(require_auth),
 ):
     try:
@@ -35,6 +37,7 @@ def get_visitors(
             supabase.table("kunjungan")
             .select("*, member:member_id(nama)")
             .order("waktu_masuk", desc=True)
+            .range(offset, offset + limit - 1)
         )
 
         if event_id:

@@ -1,38 +1,35 @@
 """
-Sistem Pemindai NFC Peken Banyumasan — FastAPI
-───────────────────────────────────────────────
-Konversi dari Flask (blueprints) → FastAPI (routers).
-
-URL prefix /api dipertahankan agar kompatibel dengan frontend
-yang sudah ada tanpa perlu perubahan konfigurasi.
+app/main.py
+────────────
+FastAPI application factory.
+Gunakan lifespan untuk setup (logging) saat startup.
 """
 
-import logging
-import sys
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import config
-from app.routers import auth, dashboard, discounts, events, members, nfc, profile, reports, umkm, visitors
+from app.core.config import settings
+from app.core.logging import setup_logging
+from app.routers import auth, dashboard, discounts, events, members, nfc, reports, umkm, visitors
 
-# ── Logging ───────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    stream=sys.stderr,
-    level=logging.DEBUG if config.DEBUG else logging.INFO,
-    format="[%(levelname)s] %(name)s: %(message)s",
-)
 
-# ── App ───────────────────────────────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    setup_logging(debug=settings.APP_DEBUG)
+    yield
+
+
 app = FastAPI(
     title="Sistem NFC Peken Banyumasan",
     version="1.0.0",
     description="API Backend Sistem Pemindai NFC — Peken Banyumasan",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
-# ── CORS ──────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -42,8 +39,9 @@ app.add_middleware(
 )
 
 # ── Routers ───────────────────────────────────────────────────────────────────
-app.include_router(auth.router,      prefix="/api/auth")
-app.include_router(profile.router,   prefix="/api")
+# Prefix /api dipertahankan agar kompatibel dengan frontend yang sudah ada.
+
+app.include_router(auth.router,      prefix="/api")
 app.include_router(nfc.router,       prefix="/api")
 app.include_router(members.router,   prefix="/api")
 app.include_router(visitors.router,  prefix="/api")

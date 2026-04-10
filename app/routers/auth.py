@@ -1,81 +1,47 @@
 """
-Router: Autentikasi
-────────────────────
-POST /api/auth/login  → REQ-AUTH-001
+Router: Autentikasi & Profil Admin
+────────────────────────────────────
+POST /api/auth/login       → login
+GET  /api/auth/me          → profil sendiri
+PUT  /api/auth/profile     → update nama
+PUT  /api/auth/password    → ganti password
 """
 
-from fastapi import APIRouter
-from gotrue.errors import AuthApiError
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends
 
-from app.dependencies import supabase
+from app.core.dependencies import CurrentUser, require_auth
+from app.schemas.auth import LoginRequest, UpdateNamaRequest, UpdatePasswordRequest
+from app.services import auth_service
 
-router = APIRouter(tags=["Auth"])
-
-
-class LoginBody(BaseModel):
-    email: str
-    password: str
+router = APIRouter(prefix="/auth", tags=["Auth"])
 
 
 @router.post("/login")
-def login(body: LoginBody):
-    email = body.email.strip()
-    password = body.password
+def login(body: LoginRequest):
+    return auth_service.login(email=body.email, password=body.password)
 
-    if not email or not password:
-        from fastapi import HTTPException
-        raise HTTPException(
-            status_code=422,
-            detail={"status": "error", "message": "Field email dan password wajib diisi"},
-        )
 
-    # ── Supabase Auth ─────────────────────────────────────────────────────
-    try:
-        auth_res = supabase.auth.sign_in_with_password(
-            {"email": email, "password": password}
-        )
-    except AuthApiError:
-        from fastapi import HTTPException
-        raise HTTPException(
-            status_code=401,
-            detail={"status": "error", "message": "Email atau password salah"},
-        )
-    except Exception:
-        from fastapi import HTTPException
-        raise HTTPException(
-            status_code=500,
-            detail={"status": "error", "message": "Terjadi kesalahan pada server"},
-        )
+@router.get("/me")
+def get_me(current_user: CurrentUser = Depends(require_auth)):
+    data = auth_service.get_admin_row(current_user.user_id)
+    return {"status": "success", "data": data}
 
-    if not auth_res.session:
-        from fastapi import HTTPException
-        raise HTTPException(
-            status_code=401,
-            detail={"status": "error", "message": "Email atau password salah"},
-        )
 
-    # ── Ambil profil dari tabel admin ─────────────────────────────────────
-    try:
-        admin_res = (
-            supabase.table("admin")
-            .select("id, nama, email, role")
-            .eq("id", auth_res.user.id)
-            .single()
-            .execute()
-        )
-    except Exception:
-        from fastapi import HTTPException
-        raise HTTPException(
-            status_code=401,
-            detail={"status": "error", "message": "Akun tidak ditemukan dalam sistem"},
-        )
+@router.put("/profile")
+def update_nama(
+    body: UpdateNamaRequest,
+    current_user: CurrentUser = Depends(require_auth),
+):
+    return auth_service.update_nama(user_id=current_user.user_id, nama=body.nama)
 
-    return {
-        "status": "success",
-        "message": "Login berhasil",
-        "data": {
-            "token": auth_res.session.access_token,
-            "user": admin_res.data,
-        },
-    }
+
+@router.put("/password")
+def update_password(
+    body: UpdatePasswordRequest,
+    current_user: CurrentUser = Depends(require_auth),
+):
+    return auth_service.update_password(
+        user_id=current_user.user_id,
+        password_lama=body.password_lama,
+        password_baru=body.password_baru,
+    )
